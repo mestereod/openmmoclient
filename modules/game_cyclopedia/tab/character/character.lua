@@ -634,21 +634,8 @@ function Cyclopedia.loadCharacterCombatStats(data, mitigation, additionalSkillsA
         end
     end
 
-    -- concoctions
-    UI.CombatStats.concoctionPanel:destroyChildren()
-    if concoctionsArray or next(concoctionsArray) ~= nil then
-        for i = 1, #concoctionsArray do
-            local widget = g_ui.createWidget("CharacterGridItem", UI.CombatStats.concoctionPanel)
-            local itemId = concoctionsArray[i][1]
-            widget:setId("concoction_" .. itemId)
-            widget.item:setItemId(itemId)
-            widget.item:setVirtual(true)
-            local minutes = concoctionsArray[i][2] / 60
-            local itemName = widget.item:getItem():getMarketData().name
-            widget.item:setTooltip(string.format("%s: %.0f minutes", itemName, minutes))
-            widget.amount:setVisible(false)
-        end
-    end
+    -- concoctions (disabled for Chronicles)
+    -- UI.CombatStats.concoctionPanel:destroyChildren()
 
     local skillsIndexes = {
         [Skill.CriticalChance] = 1,
@@ -1571,19 +1558,9 @@ local  function getWeaponSkillName(skillType)
             {name = "Blessings", value = (data.haveBlesses or 0) .. "/" .. (data.totalBlesses or 0), icon = false, percent = false},
 
         }
-        
-        if data.concoctions and #data.concoctions > 0 then
-            for _, concoction in ipairs(data.concoctions) do
-                table.insert(stats, {
-                    name = "     " .. concoction.name,
-                    parent = "right", 
-                    value = concoction.value, 
-                    percent = true,
-                    icon = false
-                })
-            end
-        end
-    
+
+        -- concoctions disabled for Chronicles
+
         local function renderStat(stat)
             local parent = stat.parent == "right" and UI.MiscStats.rightPanel or UI.MiscStats.leftPanel
     

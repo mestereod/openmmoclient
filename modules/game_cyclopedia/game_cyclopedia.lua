@@ -63,10 +63,12 @@ function controllerCyclopedia:onGameStart()
         bossSlot = buttonSelection:recursiveGetChildById('bossSlot')
         magicalArchives = buttonSelection:recursiveGetChildById('magicalArchives')
 
+        -- Hide bestiary and charms tabs (removed for Chronicles)
+        if bestiary then bestiary:setVisible(false) end
+        if charms then charms:setVisible(false) end
+
         windowTypes = {
             items = { obj = items, func = showItems },
-            bestiary = { obj = bestiary, func = showBestiary },
-            charms = { obj = charms, func = showCharms },
             map = { obj = map, func = showMap },
             houses = { obj = houses, func = showHouse },
             character = { obj = character, func = showCharacter },
@@ -80,10 +82,10 @@ function controllerCyclopedia:onGameStart()
 
         controllerCyclopedia:registerEvents(g_game, {
             onResourcesBalanceChange = Cyclopedia.onResourcesBalanceChange,
-            -- bestiary
-            onParseBestiaryRaces = Cyclopedia.loadBestiaryCategories,
-            onParseBestiaryOverview = Cyclopedia.loadBestiaryOverview,
-            onUpdateBestiaryMonsterData = Cyclopedia.loadBestiarySelectedCreature,
+            -- bestiary (disabled for Chronicles)
+            -- onParseBestiaryRaces = Cyclopedia.loadBestiaryCategories,
+            -- onParseBestiaryOverview = Cyclopedia.loadBestiaryOverview,
+            -- onUpdateBestiaryMonsterData = Cyclopedia.loadBestiarySelectedCreature,
             -- bosstiary // bestiary
             onParseCyclopediaTracker = Cyclopedia.onParseCyclopediaTracker,
             -- bosstiary
@@ -105,112 +107,15 @@ function controllerCyclopedia:onGameStart()
             onCyclopediaCharacterMiscStats = Cyclopedia.onCyclopediaCharacterMiscStats,
 
 
-            -- charms
-            onUpdateBestiaryCharmsData = Cyclopedia.loadCharms,
+            -- charms (disabled for Chronicles)
+            -- onUpdateBestiaryCharmsData = Cyclopedia.loadCharms,
             -- items
             onParseItemDetail = Cyclopedia.loadItemDetail
         })
 
         --[[===================================================
-    =               Tracker Bestiary                      =
-    =================================================== ]] --
-
-        -- Only create if it doesn't exist
-        if not trackerButton then
-            trackerButton = modules.game_mainpanel.addToggleButton("trackerButton", tr("Bestiary Tracker"),
-                "/images/options/bestiaryTracker", Cyclopedia.toggleBestiaryTracker, false, 17)
-        end
-        
-        trackerButton:setOn(false)
-        
-        -- Only create if it doesn't exist
-        if not trackerMiniWindow then
-            trackerMiniWindow = g_ui.createWidget('BestiaryTracker', modules.game_interface.getRightPanel())
-
-            -- Set the title with length limit like in containers
-            local titleWidget = trackerMiniWindow:getChildById('miniwindowTitle')
-            if titleWidget then
-                local title = tr('Bestiary Tracker')
-                if title:len() > 12 then
-                    title = title:sub(1, 12) .. "..."
-                end
-                titleWidget:setText(title)
-            end
-
-            -- Set up contextMenuButton positioning and click handler
-            local contextMenuButton = trackerMiniWindow:recursiveGetChildById('contextMenuButton')
-            local newWindowButton = trackerMiniWindow:recursiveGetChildById('newWindowButton')
-            local minimizeButton = trackerMiniWindow:recursiveGetChildById('minimizeButton')
-            
-            if contextMenuButton then
-                contextMenuButton:setVisible(true)
-                
-                -- Position contextMenuButton like in ImbuementTracker
-                if minimizeButton then
-                    contextMenuButton:breakAnchors()
-                    contextMenuButton:addAnchor(AnchorTop, minimizeButton:getId(), AnchorTop)
-                    contextMenuButton:addAnchor(AnchorRight, minimizeButton:getId(), AnchorLeft)
-                    contextMenuButton:setMarginRight(7)
-                    contextMenuButton:setMarginTop(0)
-                end
-                
-                contextMenuButton.onClick = function(widget, mousePos, mouseButton)
-                    return Cyclopedia.createTrackerContextMenu("bestiary", mousePos)
-                end
-            end
-
-            if newWindowButton then
-                newWindowButton:setVisible(true)
-                newWindowButton.onClick = function(widget, mousePos, mouseButton)
-                    toggle("bestiary")
-                    return true
-                end
-            end
-
-            -- Hook into the onOpen event to ensure data is loaded when window is shown
-            trackerMiniWindow.onOpen = function()
-                trackerButton:setOn(true)
-                -- Aggressive data loading when window becomes visible
-                scheduleEvent(function()
-                    local char = g_game.getCharacterName()
-                    if char and #char > 0 then
-                        -- Always ensure data is initialized
-                        Cyclopedia.initializeTrackerData()
-                        
-                        -- Force refresh if no data is visible
-                        if not Cyclopedia.storedTrackerData or #Cyclopedia.storedTrackerData == 0 then
-                            -- Try to load from cache first
-                            local cachedData = Cyclopedia.loadTrackerData("bestiary")
-                            if cachedData and #cachedData > 0 then
-                                Cyclopedia.storedTrackerData = cachedData
-                                Cyclopedia.onParseCyclopediaTracker(0, Cyclopedia.storedTrackerData)
-                            end
-                        end
-                        
-                        -- Always try to refresh, regardless of cached data
-                        Cyclopedia.refreshBestiaryTracker()
-                        
-                        -- Request fresh data from server
-                        g_game.requestBestiary()
-                        
-                        -- Additional fallback check
-                        scheduleEvent(function()
-                            if trackerMiniWindow:isVisible() and trackerMiniWindow.contentsPanel:getChildCount() == 0 then
-                                -- If still no data after all attempts, force another refresh
-                                Cyclopedia.refreshBestiaryTracker()
-                            end
-                        end, 500)
-                    end
-                end, 50)
-            end
-
-            trackerMiniWindow.onClose = function()
-                trackerButton:setOn(false)
-            end
-
-            trackerMiniWindow:setup()
-            trackerMiniWindow:hide()
-        end
+    =               Tracker Bestiary (disabled for Chronicles)
+    =================================================== ]]--
 
         --[[===================================================
     =               Tracker Bosstiary                     =
@@ -318,16 +223,20 @@ function controllerCyclopedia:onGameStart()
             trackerMiniWindowBosstiary:setup()
             trackerMiniWindowBosstiary:hide()
         end
-        trackerMiniWindow:setupOnStart()
+        if trackerMiniWindow then
+            trackerMiniWindow:setupOnStart()
+        end
         trackerMiniWindowBosstiary:setupOnStart()
-        Cyclopedia.loadTrackerFilters("bestiary")
+        if trackerMiniWindow then
+            Cyclopedia.loadTrackerFilters("bestiary")
+        end
         Cyclopedia.loadTrackerFilters("bosstiary")
-        
+
         -- Populate any visible trackers with cached data after windows are set up
         Cyclopedia.populateVisibleTrackersWithCachedData()
-        
+
         -- Also set up proper tracker button states based on window visibility
-        if trackerMiniWindow:isVisible() then
+        if trackerMiniWindow and trackerMiniWindow:isVisible() then
             trackerButton:setOn(true)
         end
         if trackerMiniWindowBosstiary:isVisible() then
