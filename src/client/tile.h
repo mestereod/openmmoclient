@@ -43,9 +43,6 @@ public:
 
     void clean();
 
-    void addWalkingCreature(const CreaturePtr& creature);
-    void removeWalkingCreature(const CreaturePtr& creature);
-
     void addThing(const ThingPtr& thing, int stackPos);
     bool removeThing(ThingPtr thing);
     ThingPtr getThing(int stackPos);
@@ -62,7 +59,6 @@ public:
 
     int getDrawElevation() const { return m_drawElevation; }
     const Position& getPosition() { return m_position; }
-    const std::vector<CreaturePtr>& getWalkingCreatures() { return m_walkingCreatures; }
     const std::vector<ThingPtr>& getThings() { return m_things; }
     std::vector<CreaturePtr> getCreatures();
 
@@ -77,10 +73,10 @@ public:
     bool isPathable() { return (m_thingTypeFlag & NOT_PATHABLE) == 0; }
     bool isFullGround() { return m_thingTypeFlag & FULL_GROUND; }
     bool isFullyOpaque();
-    bool isSingleDimension() { return (m_thingTypeFlag & NOT_SINGLE_DIMENSION) == 0 && m_walkingCreatures.empty(); }
+    bool isSingleDimension() { return (m_thingTypeFlag & NOT_SINGLE_DIMENSION) == 0; }
     bool isLookPossible() { return (m_thingTypeFlag & BLOCK_PROJECTTILE) == 0; }
     bool isEmpty() { return m_things.empty(); }
-    bool isDrawable() { return !isEmpty() || !m_walkingCreatures.empty() || hasEffect() || hasAttachedEffects(); }
+    bool isDrawable() { return !isEmpty() || hasEffect() || hasAttachedEffects(); }
     bool isCovered(int8_t firstFloor);
     bool isCompletelyCovered(uint8_t firstFloor, bool resetCache);
     bool isLoading() const;
@@ -180,7 +176,6 @@ private:
     bool hasThingWithElevation() { return hasElevation() && m_thingTypeFlag & HAS_THING_WITH_ELEVATION; }
     void markHighlightedThing(const Color& color);
 
-    std::vector<CreaturePtr> m_walkingCreatures;
     std::vector<ThingPtr> m_things;
 
     std::unique_ptr<std::vector<EffectPtr>> m_effects;

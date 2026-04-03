@@ -548,8 +548,15 @@ void Map::removeCreatureById(const uint32_t  id)
 void Map::removeUnawareThings()
 {
     // remove creatures from tiles that we are not aware of anymore
+    // Use +1 tile margin so creatures at the viewport edge don't pop in/out
+    const AwareRange creatureAwareRange = {
+        .left = static_cast<uint8_t>(m_awareRange.left + 1),
+        .top = static_cast<uint8_t>(m_awareRange.top + 1),
+        .right = static_cast<uint8_t>(m_awareRange.right + 1),
+        .bottom = static_cast<uint8_t>(m_awareRange.bottom + 1)
+    };
     for (const auto& [uid, creature] : m_knownCreatures) {
-        if (!isAwareOfPosition(creature->getPosition()))
+        if (!isAwareOfPosition(creature->getPosition(), creatureAwareRange))
             removeThing(creature);
     }
 

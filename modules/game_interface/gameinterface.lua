@@ -1100,41 +1100,12 @@ function processMouseAction(menuPosition, mouseButton, autoWalkPos, lookThing, u
                     return true
                 end
 
-                -- If we couldn't use or pick up the item, try to walk to its position if possible
-                local position = useThing:getPosition()
-                if position and position.x ~= 0 and autoWalkPos then
-                    local player = g_game.getLocalPlayer()
-                    player:autoWalk(autoWalkPos)
-                    return true
-                end
-
                 return true
             end
 
             -- Only look at things if no usable item was found
             if lookThing and lookThing ~= useThing then
-                local lookPosition = lookThing:getPosition()
-                local lookTile = nil
-
-                if lookPosition and lookPosition.x ~= 0 then
-                    lookTile = g_map.getTile(lookPosition)
-                end
-
-                -- For walkable tiles, we want to walk
-                if lookTile and lookTile:isWalkable() and autoWalkPos then
-                    local player = g_game.getLocalPlayer()
-                    player:autoWalk(autoWalkPos)
-                    return true
-                else
-                    -- Only look at the thing if we haven't used it already
-                    g_game.look(lookThing)
-                    return true
-                end
-            end
-
-            if autoWalkPos then
-                local player = g_game.getLocalPlayer()
-                player:autoWalk(autoWalkPos)
+                g_game.look(lookThing)
                 return true
             end
         end
@@ -1449,35 +1420,6 @@ function processMouseAction(menuPosition, mouseButton, autoWalkPos, lookThing, u
             g_game.attack(creatureThing)
             return true
         end
-    end
-
-    local player = g_game.getLocalPlayer()
-    player:stopAutoWalk()
-
-    if autoWalkPos and keyboardModifiers == KeyboardNoModifier and mouseButton == MouseLeftButton then
-        -- In Classic Control with Loot: Left option, we want to avoid walking when trying to loot
-        local classicControl = modules.client_options.getOption('classicControl')
-        local lootControlMode = modules.client_options.getOption('lootControlMode')
-
-        if classicControl and lootControlMode == 2 then
-            -- Check if there's a corpse or item we should be looting instead of walking
-            -- If not, proceed with autowalk
-            local isCorpseOrContainer = useThing and (useThing:isContainer() or useThing:isLyingCorpse())
-
-            if not isCorpseOrContainer and
-                not (lookThing and not lookThing:isCreature() and lookThing:isPickupable()) then
-                player:autoWalk(autoWalkPos)
-                if g_game.isAttacking() and g_game.getChaseMode() == ChaseOpponent then
-                    g_game.setChaseMode(DontChase)
-                end
-            end
-        else
-            player:autoWalk(autoWalkPos)
-            if g_game.isAttacking() and g_game.getChaseMode() == ChaseOpponent then
-                g_game.setChaseMode(DontChase)
-            end
-        end
-        return true
     end
 
     return false

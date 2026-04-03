@@ -37,6 +37,8 @@ public:
     uint8_t getSpriteSize() { return m_spriteSize; }
     uint16_t getLastSupportedVersion() const { return m_lastSupportedVersion; }
     bool drawTyping() const { return m_drawTyping; }
+    bool drawTileGrid() const { return m_drawTileGrid; }
+    void setDrawTileGrid(bool v) { m_drawTileGrid = v; }
     std::string getTypingIcon() const { return m_typingIcon; }
 
     Size getMapViewPort() const { return m_mapViewPort; }
@@ -92,6 +94,7 @@ private:
     uint8_t m_spriteSize{ 32 };
     uint16_t m_lastSupportedVersion{ 1511 };
     bool m_drawTyping{ false };
+    bool m_drawTileGrid{ true };
     std::string m_typingIcon{ "/images/game/console/typing" };
 
     // Map

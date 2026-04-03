@@ -234,7 +234,6 @@ void Client::registerLuaFunctions()
     g_lua.bindSingletonFunction("g_game", "forceLogout", &Game::forceLogout, &g_game);
     g_lua.bindSingletonFunction("g_game", "safeLogout", &Game::safeLogout, &g_game);
     g_lua.bindSingletonFunction("g_game", "walk", &Game::walk, &g_game);
-    g_lua.bindSingletonFunction("g_game", "autoWalk", &Game::autoWalk, &g_game);
     g_lua.bindSingletonFunction("g_game", "forceWalk", &Game::forceWalk, &g_game);
     g_lua.bindSingletonFunction("g_game", "turn", &Game::turn, &g_game);
     g_lua.bindSingletonFunction("g_game", "stop", &Game::stop, &g_game);
@@ -420,6 +419,8 @@ void Client::registerLuaFunctions()
     g_lua.bindSingletonFunction("g_gameConfig", "loadFonts", &GameConfig::loadFonts, &g_gameConfig);
     g_lua.bindSingletonFunction("g_gameConfig", "getSpriteSize", &GameConfig::getSpriteSize, &g_gameConfig);
     g_lua.bindSingletonFunction("g_gameConfig", "isDrawingInformationByWidget", &GameConfig::isDrawingInformationByWidget, &g_gameConfig);
+    g_lua.bindSingletonFunction("g_gameConfig", "drawTileGrid", &GameConfig::drawTileGrid, &g_gameConfig);
+    g_lua.bindSingletonFunction("g_gameConfig", "setDrawTileGrid", &GameConfig::setDrawTileGrid, &g_gameConfig);
     g_lua.bindSingletonFunction("g_gameConfig", "isAdjustCreatureInformationBasedCropSize", &GameConfig::isAdjustCreatureInformationBasedCropSize, &g_gameConfig);
     g_lua.bindSingletonFunction("g_gameConfig", "isUseCropSizeForUIDraw", &GameConfig::isUseCropSizeForUIDraw, &g_gameConfig);
 
@@ -615,9 +616,6 @@ void Client::registerLuaFunctions()
     g_lua.bindClassMemberFunction<Creature>("getOutfit", &Creature::getOutfit);
     g_lua.bindClassMemberFunction<Creature>("getDirection", &Creature::getDirection);
     g_lua.bindClassMemberFunction<Creature>("getStepDuration", &Creature::getStepDuration);
-    g_lua.bindClassMemberFunction<Creature>("getStepProgress", &Creature::getStepProgress);
-    g_lua.bindClassMemberFunction<Creature>("getWalkTicksElapsed", &Creature::getWalkTicksElapsed);
-    g_lua.bindClassMemberFunction<Creature>("getStepTicksLeft", &Creature::getStepTicksLeft);
     g_lua.bindClassMemberFunction<Creature>("setDirection", &Creature::setDirection);
     g_lua.bindClassMemberFunction<Creature>("setSkullTexture", &Creature::setSkullTexture);
     g_lua.bindClassMemberFunction<Creature>("setShieldTexture", &Creature::setShieldTexture);
@@ -629,7 +627,8 @@ void Client::registerLuaFunctions()
     g_lua.bindClassMemberFunction<Creature>("setManaPercent", &Creature::setManaPercent);
     g_lua.bindClassMemberFunction<Creature>("showStaticSquare", &Creature::showStaticSquare);
     g_lua.bindClassMemberFunction<Creature>("hideStaticSquare", &Creature::hideStaticSquare);
-    g_lua.bindClassMemberFunction<Creature>("isWalking", &Creature::isWalking);
+    g_lua.bindClassMemberFunction<Creature>("isWalking", &Creature::isMoving);
+    g_lua.bindClassMemberFunction<Creature>("isMoving", &Creature::isMoving);
     g_lua.bindClassMemberFunction<Creature>("isInvisible", &Creature::isInvisible);
     g_lua.bindClassMemberFunction<Creature>("isDead", &Creature::isDead);
     g_lua.bindClassMemberFunction<Creature>(
@@ -973,14 +972,8 @@ void Client::registerLuaFunctions()
     g_lua.bindClassMemberFunction<LocalPlayer>("getBlessings", &LocalPlayer::getBlessings);
     g_lua.bindClassMemberFunction<LocalPlayer>("isPremium", &LocalPlayer::isPremium);
     g_lua.bindClassMemberFunction<LocalPlayer>("isKnown", &LocalPlayer::isKnown);
-    g_lua.bindClassMemberFunction<LocalPlayer>("preWalk", &LocalPlayer::preWalk);
     g_lua.bindClassMemberFunction<LocalPlayer>("hasSight", &LocalPlayer::hasSight);
-    g_lua.bindClassMemberFunction<LocalPlayer>("isAutoWalking", &LocalPlayer::isAutoWalking);
-    g_lua.bindClassMemberFunction<LocalPlayer>("stopAutoWalk", &LocalPlayer::stopAutoWalk);
-    g_lua.bindClassMemberFunction<LocalPlayer>("isServerWalking", &LocalPlayer::isServerWalking);
-    g_lua.bindClassMemberFunction<LocalPlayer>("isPreWalking", &LocalPlayer::isPreWalking);
     g_lua.bindClassMemberFunction<LocalPlayer>("isSupplyStashAvailable", &LocalPlayer::isSupplyStashAvailable);
-    g_lua.bindClassMemberFunction<LocalPlayer>("autoWalk", &LocalPlayer::autoWalk);
     g_lua.bindClassMemberFunction<LocalPlayer>("getResourceBalance", &LocalPlayer::getResourceBalance);
     g_lua.bindClassMemberFunction<LocalPlayer>("setResourceBalance", &LocalPlayer::setResourceBalance);
     g_lua.bindClassMemberFunction<LocalPlayer>("getTotalMoney", &LocalPlayer::getTotalMoney);

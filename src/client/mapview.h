@@ -107,7 +107,7 @@ public:
 
     bool isInRange(const Position& pos, const bool ignoreZ = false)
     {
-        return getCameraPosition().isInRange(pos, m_posInfo.awareRange.left - 1, m_posInfo.awareRange.right - 2, m_posInfo.awareRange.top - 1, m_posInfo.awareRange.bottom - 2, ignoreZ);
+        return getCameraPosition().isInRange(pos, m_posInfo.awareRange.left, m_posInfo.awareRange.right - 1, m_posInfo.awareRange.top, m_posInfo.awareRange.bottom - 1, ignoreZ);
     }
 
     bool isInRangeEx(const Position& pos, const bool ignoreZ = false)

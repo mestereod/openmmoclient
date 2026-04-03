@@ -5,9 +5,6 @@ Cursors
   window:
     image: default_window
     hot-spot: 0 0
-  walk:
-    image: walkcursor
-    hot-spot: 0 0
   talk:
     image: talkcursor
     hot-spot: 0 0

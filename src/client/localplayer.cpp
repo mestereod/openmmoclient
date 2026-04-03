@@ -22,11 +22,8 @@
 
 #include "localplayer.h"
 
-#include "container.h"
 #include "game.h"
-#include "item.h"
 #include "map.h"
-#include "tile.h"
 #include "framework/core/clock.h"
 #include "framework/core/eventdispatcher.h"
 
@@ -37,219 +34,30 @@ void LocalPlayer::lockWalk(const uint16_t millis)
 
 bool LocalPlayer::canWalk(const bool ignoreLock)
 {
-    // Prevent movement if the player is dead
     if (isDead())
         return false;
 
-    // Prevent movement if walking is locked, unless ignored
     if (isWalkLocked() && !ignoreLock)
         return false;
-
-    // Ensure movement synchronization with the server
-    if (g_game.getWalkMaxSteps() > 0) {
-        if (m_preWalks.size() > g_game.getWalkMaxSteps())
-            return false;
-    } else if (getPosition() != getServerPosition())
-        return false;
-
-    // Handle ongoing movement cases
-    if (isWalking()) {
-        if (isAutoWalking()) return true;  // Allow auto-walking
-        if (isPreWalking()) return false;  // Prevent pre-walk interruptions
-    }
-
-    // allow only if walk done, ex. diagonals may need additional ticks before taking another step
-    return m_walkTimer.ticksElapsed() >= getStepDuration();
-}
-
-void LocalPlayer::walk(const Position& oldPos, const Position& newPos)
-{
-    m_autoWalkRetries = 0;
-
-    if (isPreWalking() && newPos == m_preWalks.front()) {
-        m_preWalks.pop_front();
-        return;
-    }
-
-    cancelAdjustInvalidPosEvent();
-    m_preWalks.clear();
-    m_serverWalk = true;
-
-    Creature::walk(oldPos, newPos);
-}
-
-void LocalPlayer::preWalk(Otc::Direction direction)
-{
-    m_lastMapDuration = -1;
-
-    const auto& oldPos = getPosition();
-    Creature::walk(oldPos, m_preWalks.emplace_back(oldPos.translatedToDirection(direction)));
-    Creature::onPositionChange(getLastStepToPosition(), getLastStepFromPosition());
-    registerAdjustInvalidPosEvent();
-}
-
-void LocalPlayer::onWalking() {
-    if (isPreWalking()) {
-        if (const auto& tile = g_map.getTile(getPosition())) {
-            for (const auto& creature : tile->getWalkingCreatures()) {
-                // Cancel pre-walk movement if the local player tries to walk on an unwalkable tile.
-                if (creature.get() != this && creature->getPosition() == getPosition() && !creature->isPassable()) {
-                    cancelWalk();
-                    g_map.notificateTileUpdate(getPosition(), asLocalPlayer(), Otc::OPERATION_CLEAN);
-                    break;
-                }
-            }
-        }
-    }
-}
-
-void LocalPlayer::registerAdjustInvalidPosEvent() {
-    cancelAdjustInvalidPosEvent();
-    m_adjustInvalidPosEvent = g_dispatcher.scheduleEvent([this, self = asLocalPlayer()] {
-        m_preWalks.clear();
-        g_game.resetMapUpdatedAt();
-        m_adjustInvalidPosEvent = nullptr;
-    }, std::min<int>(std::max<int>(getStepDuration(), g_game.getPing()) + 100, 1000));
-}
-
-void LocalPlayer::cancelAdjustInvalidPosEvent() {
-    if (!m_adjustInvalidPosEvent) return;
-    m_adjustInvalidPosEvent->cancel();
-    m_adjustInvalidPosEvent = nullptr;
-}
-
-bool LocalPlayer::retryAutoWalk()
-{
-    if (!m_autoWalkDestination.isValid()) {
-        return false;
-    }
-
-    g_game.stop();
-
-    if (m_autoWalkRetries <= 3) {
-        if (m_autoWalkContinueEvent)
-            m_autoWalkContinueEvent->cancel();
-
-        m_autoWalkContinueEvent = g_dispatcher.scheduleEvent(
-            [thisPtr = asLocalPlayer(), autoWalkDest = m_autoWalkDestination] { thisPtr->autoWalk(autoWalkDest, true); }, 200
-        );
-
-        m_autoWalkRetries += 1;
-
-        return true;
-    }
-
-    m_autoWalkDestination = {};
-    return false;
-}
-
-void LocalPlayer::cancelWalk(const Otc::Direction direction)
-{
-    // only cancel client side walks
-    if (isWalking() && isPreWalking())
-        stopWalk();
-
-    g_map.notificateCameraMove(m_walkOffset);
-
-    if (m_adjustInvalidPosEvent) {
-        m_adjustInvalidPosEvent->execute();
-    }
-
-    lockWalk();
-    if (retryAutoWalk()) return;
-
-    // turn to the cancel direction
-    if (direction != Otc::InvalidDirection)
-        setDirection(direction);
-
-    callLuaField("onCancelWalk", direction);
-}
-
-bool LocalPlayer::autoWalk(const Position& destination, const bool retry)
-{
-    // reset state
-    m_autoWalkDestination = {};
-    m_lastAutoWalkPosition = {};
-    if (m_autoWalkContinueEvent)
-        m_autoWalkContinueEvent->cancel();
-    m_autoWalkContinueEvent = nullptr;
-
-    if (!retry)
-        m_autoWalkRetries = 0;
-
-    if (destination == m_position)
-        return true;
-
-    m_autoWalkDestination = destination;
-
-    g_map.findPathAsync(m_position, destination, [self = asLocalPlayer()](const auto& result) {
-        if (self->m_autoWalkDestination != result->destination)
-            return;
-
-        if (result->status != Otc::PathFindResultOk) {
-            if (self->m_autoWalkRetries > 0 && self->m_autoWalkRetries <= 3) { // try again in 300, 700, 1200 ms if canceled by server
-                self->m_autoWalkContinueEvent = g_dispatcher.scheduleEvent([self, capture0 = result->destination] { self->autoWalk(capture0, true); }, 200 + self->m_autoWalkRetries * 100);
-                return;
-            }
-            self->m_autoWalkDestination = {};
-            self->callLuaField("onAutoWalkFail", result->status);
-            return;
-        }
-
-        if (result->path.size() > 127)
-            result->path.resize(127);
-
-        if (result->path.empty()) {
-            self->m_autoWalkDestination = {};
-            self->callLuaField("onAutoWalkFail", result->status);
-            return;
-        }
-
-        if (self->m_autoWalkDestination != result->destination) {
-            self->m_lastAutoWalkPosition = result->destination;
-        }
-
-        g_game.autoWalk(result->path, result->start);
-    });
-
-    if (!retry)
-        lockWalk();
 
     return true;
 }
 
 bool LocalPlayer::isWalkLocked() { return m_walkLockExpiration != 0 && g_clock.millis() < m_walkLockExpiration; }
 
-void LocalPlayer::stopAutoWalk()
+void LocalPlayer::cancelWalk(const Otc::Direction direction)
 {
-    m_autoWalkDestination = {};
-    m_lastAutoWalkPosition = {};
-    m_knownCompletePath = false;
+    g_map.notificateCameraMove(getSubTileOffset());
 
-    if (m_autoWalkContinueEvent)
-        m_autoWalkContinueEvent->cancel();
-}
+    if (direction != Otc::InvalidDirection)
+        setDirection(direction);
 
-void LocalPlayer::terminateWalk()
-{
-    Creature::terminateWalk();
-    m_serverWalk = false;
-    callLuaField("onWalkFinish");
+    callLuaField("onCancelWalk", direction);
 }
 
 void LocalPlayer::onPositionChange(const Position& newPos, const Position& oldPos)
 {
-    if (isPreWalking())
-        return;
-
     Creature::onPositionChange(newPos, oldPos);
-
-    if (newPos == m_autoWalkDestination)
-        stopAutoWalk();
-    else if (m_autoWalkDestination.isValid() && newPos == m_lastAutoWalkPosition)
-        autoWalk(m_autoWalkDestination);
-
-    m_serverWalk = false;
 }
 
 void LocalPlayer::setStates(const uint64_t states)
@@ -259,9 +67,6 @@ void LocalPlayer::setStates(const uint64_t states)
 
     const uint64_t oldStates = m_states;
     m_states = states;
-
-    if (isParalyzed() && isWalking() && m_serverWalk)
-        updateWalk();
 
     callLuaField("onStatesChange", states, oldStates);
 }
@@ -314,8 +119,6 @@ void LocalPlayer::setHealth(const uint32_t health, const uint32_t maxHealth)
         callLuaField("onHealthChange", health, maxHealth, oldHealth, oldMaxHealth);
 
         if (isDead()) {
-            if (isPreWalking())
-                stopWalk();
             lockWalk();
         }
     }

@@ -168,6 +168,17 @@ void MapView::drawFloor()
         if (canFloorFade())
             g_drawPool.resetOpacity();
 
+        // Debug: draw tile grid overlay on camera floor (above all sprites)
+        if (g_gameConfig.drawTileGrid() && z == cameraPosition.z) {
+            g_drawPool.setDrawOrder(DrawOrder::FIFTH);
+            static constexpr Color gridColor(0, 255, 255, 128);
+            for (const auto& tile : map.tiles) {
+                const auto pos2d = transformPositionTo2D(tile->getPosition());
+                g_drawPool.addBoundingRect(Rect(pos2d, Size(m_tileSize, m_tileSize)), gridColor, 1);
+            }
+            g_drawPool.resetDrawOrder();
+        }
+
         g_drawPool.flush();
     }
 
@@ -437,6 +448,18 @@ void MapView::updateRect(const Rect& rect) {
         requestUpdateMapPosInfo();
     }
 
+    // During continuous sub-tile movement (including client-side prediction),
+    // the creature's visual offset changes every frame. Update the viewport
+    // direction so edge tiles in the movement direction are rendered, force
+    // srcRect recalculation so the camera pans smoothly, and repaint
+    // foreground pools so creature info stays in sync.
+    if (isFollowingCreature() && m_followingCreature->isMoving()) {
+        updateViewport(m_followingCreature->getDirection());
+        requestUpdateMapPosInfo();
+        g_drawPool.repaint(DrawPoolType::FOREGROUND_MAP);
+        g_drawPool.repaint(DrawPoolType::CREATURE_INFORMATION);
+    }
+
     if (m_posInfo.rect != rect || m_updateMapPosInfo) {
         m_updateMapPosInfo = false;
 
@@ -522,7 +545,7 @@ void MapView::onCameraMove(const Point& /*offset*/)
 {
     requestUpdateMapPosInfo();
     if (isFollowingCreature()) {
-        updateViewport(m_followingCreature->isWalking() ? m_followingCreature->getDirection() : Otc::InvalidDirection);
+        updateViewport(m_followingCreature->isMoving() ? m_followingCreature->getDirection() : Otc::InvalidDirection);
     }
 }
 
@@ -621,15 +644,8 @@ void MapView::onMouseMove(const Position& mousePos, const bool /*isVirtualMove*/
                     }
                 }
 
-                if (!cursorSet && tile->isWalkable()) {
-                    int id = g_mouse.getCursorId("walk");
-                    if (id != -1) {
-                        g_window.setMouseCursor(id);
-                        cursorSet = true;
                     }
                 }
-            }
-        }
 
         if (!cursorSet) {
             int id = g_mouse.getCursorId("default");
@@ -812,7 +828,7 @@ Rect MapView::calcFramebufferSource(const Size& destSize)
 {
     Point drawOffset = ((m_drawDimension - m_visibleDimension - Size(1)).toPoint() / 2) * m_tileSize;
     if (isFollowingCreature())
-        drawOffset += m_followingCreature->getWalkOffset() * m_pool->getScaleFactor();
+        drawOffset += m_followingCreature->getSubTileOffset() * m_pool->getScaleFactor();
     else if (!m_moveOffset.isNull())
         drawOffset += m_moveOffset * m_pool->getScaleFactor();
 
@@ -976,37 +992,13 @@ void MapView::updateViewportDirectionCache()
         vp.bottom = vp.top;
         vp.left = vp.right;
 
-        switch (dir) {
-            case Otc::North:
-            case Otc::South:
-                vp.top += 1;
-                vp.bottom += 1;
-                break;
-
-            case Otc::West:
-            case Otc::East:
-                vp.right += 1;
-                vp.left += 1;
-                break;
-
-            case Otc::NorthEast:
-            case Otc::SouthEast:
-            case Otc::NorthWest:
-            case Otc::SouthWest:
-                vp.left += 1;
-                vp.bottom += 1;
-                vp.top += 1;
-                vp.right += 1;
-                break;
-
-            case Otc::InvalidDirection:
-                vp.left -= 1;
-                vp.right -= 1;
-                break;
-
-            default:
-                break;
-        }
+        // Sub-tile movement creates fractional camera offsets that can shift
+        // the view in any direction, regardless of movement direction.
+        // Always render +1 tile margin on all sides to prevent black gaps.
+        vp.left += 1;
+        vp.right += 1;
+        vp.top += 1;
+        vp.bottom += 1;
     }
 }
 

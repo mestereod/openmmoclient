@@ -216,7 +216,8 @@ void Game::processGameEnd()
 void Game::processDeath(const uint8_t deathType, const uint8_t penality)
 {
     m_dead = true;
-    m_localPlayer->stopWalk();
+    m_localPlayer->stopMovementPrediction();
+    m_localPlayer->resetContinuousMovementState();
 
     g_lua.callGlobalField("g_game", "onDeath", deathType, penality);
 }
@@ -581,6 +582,13 @@ void Game::processAttackCancel(const uint32_t seq)
 
 void Game::processWalkCancel(const Otc::Direction direction)
 {
+    // Reject prediction WITHOUT capturing the predicted-forward position.
+    // This snaps the character back to its pre-prediction base and sets
+    // collision suppression to prevent flickering on retries.
+    m_localPlayer->rejectMovementPrediction();
+    // Clear cooldown so the server's corrected sub-tile position (sent right
+    // after cancelWalk) is accepted instead of being filtered as stale.
+    m_localPlayer->clearPredictionCooldown();
     m_localPlayer->cancelWalk(direction);
 }
 
@@ -670,45 +678,17 @@ bool Game::walk(const Otc::Direction direction)
     return true;
 }
 
-void Game::autoWalk(const std::vector<Otc::Direction>& dirs, const Position& startPos)
-{
-    if (!canPerformGameAction())
-        return;
-
-    if (dirs.size() == 0)
-        return;
-
-    // protocol limits walk path
-    if (dirs.size() > 127) {
-        g_logger.error("Auto walk path too great");
-        return;
-    }
-
-    // must cancel follow before any new walk
-    if (isFollowing()) {
-        cancelFollow();
-    }
-
-    const Otc::Direction direction = *dirs.begin();
-    if (const auto& toTile = g_map.getTile(startPos.translatedToDirection(direction))) {
-        if (m_localPlayer->isPreWalking() && startPos == m_localPlayer->getPosition() && toTile->isWalkable() && !m_localPlayer->isWalking() && m_localPlayer->canWalk(true)) {
-            m_localPlayer->preWalk(direction);
-        }
-    }
-
-    g_lua.callGlobalField("g_game", "onAutoWalk", m_localPlayer, dirs);
-    m_protocolGame->sendAutoWalk(dirs);
-}
-
 void Game::forceWalk(const Otc::Direction direction)
 {
     if (!canPerformGameAction())
         return;
 
-    if (m_mapUpdateTimer.first || m_localPlayer->m_preWalks.size() == 1) {
-        m_mapUpdateTimer.second.restart();
-        m_mapUpdateTimer.first = false;
-    }
+    // Already moving in this direction — skip redundant packet and prediction restart
+    if (m_localPlayer->isMovementPredicting() && m_localPlayer->getPredictionDirection() == direction)
+        return;
+
+    // Start client-side prediction for instant visual feedback
+    m_localPlayer->startMovementPrediction(direction);
 
     switch (direction) {
         case Otc::North:
@@ -773,6 +753,7 @@ void Game::stop()
     if (isFollowing())
         cancelFollow();
 
+    m_localPlayer->stopMovementPrediction();
     m_protocolGame->sendStop();
 }
 
@@ -945,7 +926,6 @@ void Game::attack(CreaturePtr creature)
         cancelFollow();
 
     setAttackingCreature(creature);
-    m_localPlayer->stopAutoWalk();
 
     if (m_protocolVersion >= 963) {
         if (creature)
@@ -969,7 +949,6 @@ void Game::follow(CreaturePtr creature)
         cancelAttack();
 
     setFollowingCreature(creature);
-    m_localPlayer->stopAutoWalk();
 
     if (m_protocolVersion >= 963) {
         if (creature)
@@ -990,8 +969,6 @@ void Game::cancelAttackAndFollow()
 
     if (isAttacking())
         setAttackingCreature(nullptr);
-
-    m_localPlayer->stopAutoWalk();
 
     m_protocolGame->sendCancelAttackAndFollow();
 

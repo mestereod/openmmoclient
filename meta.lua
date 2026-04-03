@@ -729,10 +729,6 @@ function g_game.walk(direction, isKeyDown) end
 ---@param scheduleLastWalk boolean
 function g_game.setScheduleLastWalk(scheduleLastWalk) end
 
----@param dirs integer[]
----@param startPos Position | string
-function g_game.autoWalk(dirs, startPos) end
-
 ---@param direction integer
 function g_game.forceWalk(direction) end
 
@@ -2653,16 +2649,6 @@ function LocalPlayer:isSupplyStashAvailable() end
 ---@param pos Position | string
 ---@return boolean
 function LocalPlayer:hasSight(pos) end
-
----@return boolean
-function LocalPlayer:isAutoWalking() end
-
-function LocalPlayer:stopAutoWalk() end
-
----@param destination Position | string
----@param retry? boolean false
----@return boolean
-function LocalPlayer:autoWalk(destination, retry) end
 
 ---@param resource integer
 ---@return number

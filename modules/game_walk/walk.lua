@@ -5,6 +5,7 @@ local lastTurn = 0
 local nextWalkDir = nil
 local lastWalkDir = nil
 local lastCancelWalkTime = 0
+local lastSentDir = nil
 
 
 local keys = {
@@ -35,6 +36,13 @@ WalkController = Controller:new()
 local function stopSmartWalk()
     smartWalkDirs = {}
     smartWalkDir = nil
+    -- Send stop to server so continuous movement stops
+    if lastSentDir ~= nil then
+        lastSentDir = nil
+        if g_game.isOnline() and not g_game.isDead() then
+            g_game.stop()
+        end
+    end
 end
 
 --- Cancels the current walk event if active.
@@ -80,46 +88,24 @@ local function walk(dir)
     end
 
     if player:isWalkLocked() then
-        nextWalkDir = nil
+        nextWalkDir = dir
         return
+    end
+
+    -- Already moving in this direction — skip redundant packet
+    if dir == lastSentDir then
+        return true
     end
 
     if g_game.isFollowing() then
         g_game.cancelFollow()
     end
 
-    local isAutoWalking = player:isAutoWalking()
-    if isAutoWalking or player:isServerWalking() then
-        g_game.stop()
-        if isAutoWalking then
-            player:stopAutoWalk()
-        end
-        player:lockWalk(player:getStepDuration() + 50)
-        return
-    end
-
-    if not player:canWalk() then
-        if lastWalkDir ~= dir then
-            nextWalkDir = dir
-        end
-        return
-    end
-
     nextWalkDir = nil
     lastWalkDir = dir
+    lastSentDir = dir
 
-    if g_game.getFeature(GameAllowPreWalk) then
-        local toPos = Position.translatedToDirection(player:getPosition(), dir)
-        local toTile = g_map.getTile(toPos)
-        if not toTile or not toTile:isWalkable() then
-            if not canChangeFloor(toPos, 1) and not canChangeFloor(toPos, -1) then
-                return false
-            end
-        else
-            player:preWalk(dir)
-        end
-    end
-
+    -- Continuous movement: send direction to server (one packet per direction change)
     g_game.walk(dir)
     return true
 end
@@ -176,6 +162,9 @@ local function changeWalkDir(dir, pop)
             end
         end
     end
+
+    -- Immediately send direction change to server (continuous movement)
+    walk(smartWalkDir)
 end
 
 --- Handles turning the player.
@@ -240,12 +229,19 @@ local function onWalkFinish(player)
     end
 end
 
-local function onAutoWalk(player)
-end
-
 --- Handles cancellation of a walking event.
 local function onCancelWalk(player)
-    player:lockWalk(50)
+    player:lockWalk(30)
+    lastSentDir = nil
+    -- Schedule a retry after the lock expires. Visual prediction is suppressed
+    -- on the C++ side (collision suppression) so there is no flickering, but
+    -- we still need to re-send the direction so the server retries the move
+    -- when the obstacle clears.
+    scheduleEvent(function()
+        if smartWalkDir and not player:isWalkLocked() and not g_game.isDead() then
+            walk(smartWalkDir)
+        end
+    end, 100)
 end
 
 --- Initializes the WalkController.
@@ -261,29 +257,22 @@ end
 function WalkController:onGameStart()
     self:registerEvents(g_game, {
         onGameStart = onGameStart,
-        onTeleport = onTeleport,
-        onAutoWalk = onAutoWalk
+        onTeleport = onTeleport
     })
 
     self:registerEvents(LocalPlayer, {
         onCancelWalk = onCancelWalk,
-        onWalkFinish = onWalkFinish,
-        onAutoWalk = onAutoWalk
+        onWalkFinish = onWalkFinish
     })
 
     modules.game_interface.getRootPanel().onFocusChange = stopSmartWalk
     modules.game_joystick.addOnJoystickMoveListener(function(dir) g_game.walk(dir) end)
-
-    if not g_game.isOfficialTibia() then
-        g_game.enableFeature(GameForceFirstAutoWalkStep)
-    else
-        g_game.disableFeature(GameForceFirstAutoWalkStep)
-    end
 end
 
 --- Cleans up resources when the game ends.
 function WalkController:onGameEnd()
     stopSmartWalk()
+    lastSentDir = nil
 end
 
 --- Utility functions for binding and unbinding keys.
@@ -291,16 +280,14 @@ function bindWalkKey(key, dir)
     local gameRootPanel = modules.game_interface.getRootPanel()
 
     g_keyboard.bindKeyDown(key, function()
-        g_keyboard.setKeyDelay(key, 1)
         changeWalkDir(dir)
     end, gameRootPanel, true)
 
     g_keyboard.bindKeyUp(key, function()
-        g_keyboard.setKeyDelay(key, 30)
         changeWalkDir(dir, true)
     end, gameRootPanel, true)
 
-    g_keyboard.bindKeyPress(key, function() smartWalk(dir) end, gameRootPanel)
+    -- No keyPress auto-repeat: continuous movement only needs one packet per direction change
 end
 
 function bindTurnKey(key, dir)

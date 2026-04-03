@@ -137,7 +137,7 @@ void Tile::drawCreature(const Point& dest, const int flags, const bool forceDraw
     bool localPlayerDrawed = false;
     if (hasCreatures()) {
         for (const auto& thing : m_things) {
-            if (!thing->isCreature() || thing->static_self_cast<Creature>()->isWalking()) continue;
+            if (!thing->isCreature()) continue;
 
             if (thing->isLocalPlayer()) {
                 if (thing->getPosition() != m_position) continue;
@@ -148,22 +148,8 @@ void Tile::drawCreature(const Point& dest, const int flags, const bool forceDraw
         }
     }
 
-    g_drawPool.setDrawOrder(DrawOrder::THIRD);
-    for (const auto& creature : m_walkingCreatures) {
-        const auto& cDest = Point(
-            dest.x + ((creature->getPosition().x - m_position.x) * g_gameConfig.getSpriteSize() - creature->getDrawElevation()) * g_drawPool.getScaleFactor(),
-            dest.y + ((creature->getPosition().y - m_position.y) * g_gameConfig.getSpriteSize() - creature->getDrawElevation()) * g_drawPool.getScaleFactor()
-        );
-
-        if (flags == Otc::DrawLights)
-            creature->drawLight(cDest, lightView);
-        else
-            creature->draw(cDest, flags & Otc::DrawThings);
-    }
-    g_drawPool.resetDrawOrder();
-
-    // draw the local character if he is on a virtual tile, that is, his visual position is not the same as the server.
-    if (!localPlayerDrawed && g_game.getLocalPlayer() && !g_game.getLocalPlayer()->isWalking() && g_game.getLocalPlayer()->getPosition() == m_position) {
+    // draw the local character if not already drawn
+    if (!localPlayerDrawed && g_game.getLocalPlayer() && g_game.getLocalPlayer()->getPosition() == m_position) {
         drawThing(g_game.getLocalPlayer(), dest, flags, drawElevation, lightView);
     }
 }
@@ -215,22 +201,6 @@ void Tile::clean()
 #ifdef FRAMEWORK_EDITOR
     m_flags = 0;
 #endif
-}
-
-void Tile::addWalkingCreature(const CreaturePtr& creature)
-{
-    m_walkingCreatures.emplace_back(creature);
-    setThingFlag(creature);
-}
-
-void Tile::removeWalkingCreature(const CreaturePtr& creature)
-{
-    const auto it = std::ranges::find(m_walkingCreatures, creature);
-    if (it == m_walkingCreatures.end())
-        return;
-
-    m_walkingCreatures.erase(it);
-    recalculateThingFlag();
 }
 
 void Tile::updateThingStackPos() {
@@ -589,23 +559,6 @@ CreaturePtr Tile::getTopCreature(const bool checkAround)
     if (creature)
         return creature;
 
-    if (!m_walkingCreatures.empty())
-        return m_walkingCreatures.back();
-
-    // check for walking creatures in tiles around
-    if (checkAround) {
-        for (const auto& pos : m_position.getPositionsAround()) {
-            const auto& tile = g_map.getTile(pos);
-            if (!tile) continue;
-
-            for (const auto& c : tile->getCreatures()) {
-                if (c->isWalking() && c->getLastStepFromPosition() == m_position && c->getStepProgress() < .75f) {
-                    return c;
-                }
-            }
-        }
-    }
-
     return nullptr;
 }
 
@@ -690,7 +643,7 @@ bool Tile::isCompletelyCovered(const uint8_t firstFloor, const bool resetCache)
         m_isCompletelyCovered = m_isCovered = 0;
     }
 
-    if (hasCreatures() || !m_walkingCreatures.empty() || hasLight())
+    if (hasCreatures() || hasLight())
         return false;
 
     const uint32_t idChecked = 1 << firstFloor;
@@ -1001,9 +954,9 @@ bool Tile::canRender(uint32_t& flags, const Position& cameraPosition, const Awar
 
     // Check for non-visible tiles on the screen and ignore them
     {
-        if ((cameraPosition.x - checkPos.x >= viewPort.left) || (checkPos.x - cameraPosition.x == viewPort.right && !hasWideThings() && !hasDisplacement() && !hasThingWithElevation() && m_walkingCreatures.empty()))
+        if ((cameraPosition.x - checkPos.x >= viewPort.left) || (checkPos.x - cameraPosition.x == viewPort.right && !hasWideThings() && !hasDisplacement() && !hasThingWithElevation()))
             draw = false;
-        else if ((cameraPosition.y - checkPos.y >= viewPort.top) || (checkPos.y - cameraPosition.y == viewPort.bottom && !hasTallThings() && !hasWideThings2() && !hasDisplacement() && !hasThingWithElevation() && m_walkingCreatures.empty()))
+        else if ((cameraPosition.y - checkPos.y >= viewPort.top) || (checkPos.y - cameraPosition.y == viewPort.bottom && !hasTallThings() && !hasWideThings2() && !hasDisplacement() && !hasThingWithElevation()))
             draw = false;
         else if (((checkPos.x - cameraPosition.x > viewPort.right && (!hasWideThings() || !hasDisplacement() || !hasThingWithElevation())) || (checkPos.y - cameraPosition.y > viewPort.bottom)) && !hasTallThings2())
             draw = false;

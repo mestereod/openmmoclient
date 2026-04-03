@@ -73,16 +73,38 @@ void Creature::draw(const Point& dest, const bool drawThings, LightView* /*light
     if (!canBeSeen() || !canDraw() || isDead())
         return;
 
+    // Stop walk animation if no sub-tile updates received for a while
+    // but NOT during prediction or transition
+    if (m_subTileMoving && !m_isPredicting && !m_subTileTransitioning && m_subTileMoveTimer.ticksElapsed() > 100) {
+        m_subTileMoving = false;
+        m_walkAnimationPhase = 0;
+    }
+
+    // Complete sub-tile transition when duration elapsed
+    if (m_subTileTransitioning && m_subTileTransitionTimer.ticksElapsed() >= m_subTileTransitionDuration) {
+        m_subTileTransitioning = false;
+        m_subTileMoving = false;
+        m_subTileX = 128;
+        m_subTileY = 128;
+        m_walkAnimationPhase = 0;
+    }
+
+    // Drive walk animation every frame during movement
+    if (m_subTileMoving || m_isPredicting || m_subTileTransitioning) {
+        updateWalkAnimation();
+    }
+
     if (drawThings) {
+        const auto subTileOff = getSubTileOffset();
         if (m_showTimedSquare) {
-            g_drawPool.addBoundingRect(Rect(dest + (m_walkOffset - getDisplacement() + 2) * g_drawPool.getScaleFactor(), Size(28 * g_drawPool.getScaleFactor())), m_timedSquareColor, std::max<int>(static_cast<int>(2 * g_drawPool.getScaleFactor()), 1));
+            g_drawPool.addBoundingRect(Rect(dest + (subTileOff - getDisplacement() + 2) * g_drawPool.getScaleFactor(), Size(28 * g_drawPool.getScaleFactor())), m_timedSquareColor, std::max<int>(static_cast<int>(2 * g_drawPool.getScaleFactor()), 1));
         }
 
         if (m_showStaticSquare) {
-            g_drawPool.addBoundingRect(Rect(dest + (m_walkOffset - getDisplacement()) * g_drawPool.getScaleFactor(), Size(g_gameConfig.getSpriteSize() * g_drawPool.getScaleFactor())), m_staticSquareColor, std::max<int>(static_cast<int>(2 * g_drawPool.getScaleFactor()), 1));
+            g_drawPool.addBoundingRect(Rect(dest + (subTileOff - getDisplacement()) * g_drawPool.getScaleFactor(), Size(g_gameConfig.getSpriteSize() * g_drawPool.getScaleFactor())), m_staticSquareColor, std::max<int>(static_cast<int>(2 * g_drawPool.getScaleFactor()), 1));
         }
 
-        auto _dest = dest + m_walkOffset * g_drawPool.getScaleFactor();
+        auto _dest = dest + getSubTileOffset() * g_drawPool.getScaleFactor();
 
         auto oldScaleFactor = g_drawPool.getScaleFactor();
 
@@ -119,10 +141,10 @@ void Creature::drawLight(const Point& dest, LightView* lightView) {
     }
 
     if (light.intensity > 0) {
-        lightView->addLightSource(dest + (m_walkOffset + (Point(g_gameConfig.getSpriteSize() / 2))) * g_drawPool.getScaleFactor(), light);
+        lightView->addLightSource(dest + (getSubTileOffset() + (Point(g_gameConfig.getSpriteSize() / 2))) * g_drawPool.getScaleFactor(), light);
     }
 
-    drawAttachedLightEffect(dest + m_walkOffset * g_drawPool.getScaleFactor(), lightView);
+    drawAttachedLightEffect(dest + getSubTileOffset() * g_drawPool.getScaleFactor(), lightView);
 
     for (const auto& paperdoll : m_paperdolls)
         paperdoll->drawLight(dest, m_outfit.hasMount(), lightView);
@@ -483,53 +505,351 @@ void Creature::internalDraw(Point dest, const Color& color)
 
 void Creature::turn(const Otc::Direction direction)
 {
-    // schedules to set the new direction when walk ends
-    if (m_walking) {
-        m_walkTurnDirection = direction;
-        return;
-    }
-
-    // if is not walking change the direction right away
     setDirection(direction);
 }
 
-void Creature::walk(const Position& oldPos, const Position& newPos)
+void Creature::setSubTilePosition(uint8_t subX, uint8_t subY)
 {
-    if (oldPos == newPos)
+    // During prediction, ignore server sub-tile updates entirely.
+    // The client prediction is ahead by network latency; applying server values
+    // would cause the character to snap backward. Server values are stale by design.
+    // Tile crossings are handled separately via onAppear().
+    if (m_isPredicting) {
         return;
-
-    // get walk direction
-    m_lastStepDirection = oldPos.getDirectionFromPosition(newPos);
-    m_lastStepFromPosition = oldPos;
-    m_lastStepToPosition = newPos;
-
-    // set current walking direction
-    setDirection(m_lastStepDirection);
-
-    // starts counting walk
-    m_walking = true;
-    m_walkTimer.restart();
-    m_walkedPixels = 0;
-
-    // no direction need to be changed when the walk ends
-    m_walkTurnDirection = Otc::InvalidDirection;
-
-    if (m_walkFinishAnimEvent) {
-        m_walkFinishAnimEvent->cancel();
-        m_walkFinishAnimEvent = nullptr;
     }
 
-    // starts updating walk
-    nextWalkUpdate();
+    // After prediction stops, server sub-tile updates may still be stale
+    // (the server hasn't processed our stop yet). Ignore them briefly to
+    // prevent snap-back.
+    if (m_predictionCooldown) {
+        if (m_predictionCooldownTimer.ticksElapsed() < 150) {
+            return;
+        }
+        m_predictionCooldown = false;
+    }
+
+    const uint8_t oldSubX = m_subTileX;
+    const uint8_t oldSubY = m_subTileY;
+
+    m_subTileX = subX;
+    m_subTileY = subY;
+
+    // If sub-tile position changed, infer movement direction and update walk animation
+    if (oldSubX != subX || oldSubY != subY) {
+        // Server is moving us — clear collision suppression
+        m_collisionSuppressed = false;
+        m_collisionDirection = Otc::InvalidDirection;
+
+        const int dx = static_cast<int>(subX) - static_cast<int>(oldSubX);
+        const int dy = static_cast<int>(subY) - static_cast<int>(oldSubY);
+
+        Otc::Direction dir = Otc::InvalidDirection;
+        if (dx > 0 && dy < 0) dir = Otc::NorthEast;
+        else if (dx > 0 && dy > 0) dir = Otc::SouthEast;
+        else if (dx < 0 && dy < 0) dir = Otc::NorthWest;
+        else if (dx < 0 && dy > 0) dir = Otc::SouthWest;
+        else if (dx > 0) dir = Otc::East;
+        else if (dx < 0) dir = Otc::West;
+        else if (dy < 0) dir = Otc::North;
+        else if (dy > 0) dir = Otc::South;
+
+        if (dir != Otc::InvalidDirection) {
+            setDirection(dir);
+            m_lastStepDirection = dir;
+            if (!m_subTileMoving) {
+                m_footTimer.restart();
+            }
+            m_subTileMoving = true;
+            m_subTileMoveTimer.restart();
+        }
+
+        updateWalkAnimation();
+
+        if (isCameraFollowing()) {
+            g_map.notificateCameraMove(getSubTileOffset());
+        }
+    }
 }
 
-void Creature::stopWalk()
+std::pair<float, float> Creature::getPredictedSubTileF() const
 {
-    if (!m_walking)
+    float subX = static_cast<float>(m_subTileX);
+    float subY = static_cast<float>(m_subTileY);
+
+    // Sub-tile transition: interpolate from start position to center (128,128)
+    if (m_subTileTransitioning && m_subTileTransitionDuration > 0) {
+        const float progress = std::min(1.0f, static_cast<float>(m_subTileTransitionTimer.ticksElapsed()) / static_cast<float>(m_subTileTransitionDuration));
+        subX = m_subTileTransitionStartX + (128.0f - m_subTileTransitionStartX) * progress;
+        subY = m_subTileTransitionStartY + (128.0f - m_subTileTransitionStartY) * progress;
+        return { subX, subY };
+    }
+
+    if (m_isPredicting && m_predictionDirection != Otc::InvalidDirection && m_predictionStepDuration > 0) {
+        const float elapsed = m_predictionTimer.ticksElapsed();
+        const float subTilesPerMs = 255.0f / static_cast<float>(m_predictionStepDuration);
+        const float delta = subTilesPerMs * elapsed;
+        const bool diag = Position::isDiagonal(m_predictionDirection);
+        const float axisDelta = diag ? delta * 0.7071f : delta;
+
+        float dx = 0.0f, dy = 0.0f;
+        switch (m_predictionDirection) {
+            case Otc::North: dy = -axisDelta; break;
+            case Otc::South: dy = axisDelta; break;
+            case Otc::West: dx = -axisDelta; break;
+            case Otc::East: dx = axisDelta; break;
+            case Otc::NorthEast: dx = axisDelta; dy = -axisDelta; break;
+            case Otc::NorthWest: dx = -axisDelta; dy = -axisDelta; break;
+            case Otc::SouthEast: dx = axisDelta; dy = axisDelta; break;
+            case Otc::SouthWest: dx = -axisDelta; dy = axisDelta; break;
+            default: break;
+        }
+
+        subX += dx;
+        subY += dy;
+
+        // Only clamp at tile boundaries when the next tile is not walkable.
+        // This prevents the character from visually passing through walls.
+        // For walkable tiles, prediction is allowed past boundaries for smooth
+        // movement; onAppear() handles the tile crossing shift.
+        // If the server rejects a move the client thought was valid, the server
+        // sends its corrected sub-tile position alongside cancelWalk.
+        if (!m_predictionNextTileWalkable) {
+            subX = std::clamp(subX, 0.0f, 255.0f);
+            subY = std::clamp(subY, 0.0f, 255.0f);
+        }
+    }
+
+    return { subX, subY };
+}
+
+Point Creature::getSubTileOffset() const
+{
+    auto [subX, subY] = getPredictedSubTileF();
+    const int spriteSize = g_gameConfig.getSpriteSize();
+    // Convert sub-tile (0-255) to pixel offset relative to tile center
+    // 128 = center (0 offset), 0 = -spriteSize/2, 255 = +spriteSize/2
+    const int offsetX = static_cast<int>((subX / 255.0f - 0.5f) * spriteSize);
+    const int offsetY = static_cast<int>((subY / 255.0f - 0.5f) * spriteSize);
+    return { offsetX, offsetY };
+}
+
+void Creature::startMovementPrediction(Otc::Direction dir)
+{
+    // After a collision (cancelWalk), suppress visual prediction in the same
+    // direction to prevent flickering. The walk packet is still sent to the
+    // server, but no visual prediction occurs until the server confirms a
+    // successful move or the player changes direction.
+    if (m_collisionSuppressed) {
+        if (dir == m_collisionDirection) {
+            return;
+        }
+        // Different direction — clear suppression and proceed normally
+        m_collisionSuppressed = false;
+        m_collisionDirection = Otc::InvalidDirection;
+    }
+
+    // Already predicting in the same direction — don't restart timer
+    if (m_isPredicting && m_predictionDirection == dir)
         return;
 
-    // stops the walk right away
-    terminateWalk();
+    // If already predicting in a different direction, capture current predicted
+    // position as the new base before changing direction
+    if (m_isPredicting) {
+        auto [subX, subY] = getPredictedSubTileF();
+        m_subTileX = static_cast<uint8_t>(std::clamp(subX, 0.0f, 255.0f));
+        m_subTileY = static_cast<uint8_t>(std::clamp(subY, 0.0f, 255.0f));
+    }
+
+    // Set direction so the character faces the intended direction even if
+    // the tile is blocked (visual feedback: face the wall).
+    setDirection(dir);
+    m_lastStepDirection = dir;
+
+    // Client-side walkability check — if the next tile is known-blocked,
+    // skip visual prediction entirely to avoid the predict-forward → snap-back
+    // artifact. The walk packet is still sent by the caller (forceWalk),
+    // so the server remains the authority.
+    if (!checkNextTileWalkable(dir)) {
+        if (m_isPredicting) {
+            m_isPredicting = false;
+            m_predictionDirection = Otc::InvalidDirection;
+            m_subTileMoving = false;
+            m_walkAnimationPhase = 0;
+        }
+        m_collisionSuppressed = true;
+        m_collisionDirection = dir;
+        if (isCameraFollowing()) {
+            g_map.notificateCameraMove(getSubTileOffset());
+        }
+        return;
+    }
+
+    m_predictionDirection = dir;
+    m_predictionStepDuration = getStepDuration(false, dir);
+    m_predictionNextTileWalkable = true;
+
+    // Start walk animation immediately for instant visual feedback
+    // Sub-tile movement uses m_subTileMoving for animation control.
+    if (!m_subTileMoving) {
+        m_footTimer.restart();
+    }
+    m_subTileMoving = true;
+    m_subTileMoveTimer.restart();
+    m_predictionCooldown = false;
+    updateWalkAnimation();
+
+    if (!m_isPredicting) {
+        m_isPredicting = true;
+    }
+    m_predictionTimer.restart();
+}
+
+void Creature::stopMovementPrediction()
+{
+    // Capture current predicted visual position so the character doesn't
+    // snap back to the old m_subTileX/Y base when prediction stops
+    if (m_isPredicting) {
+        auto [subX, subY] = getPredictedSubTileF();
+        m_subTileX = static_cast<uint8_t>(std::clamp(subX, 0.0f, 255.0f));
+        m_subTileY = static_cast<uint8_t>(std::clamp(subY, 0.0f, 255.0f));
+    }
+
+    m_isPredicting = false;
+    m_predictionDirection = Otc::InvalidDirection;
+    m_predictionNextTileWalkable = true;
+    m_subTileMoving = false;
+    m_walkAnimationPhase = 0;
+
+    // Clear collision suppression when the player deliberately stops
+    m_collisionSuppressed = false;
+    m_collisionDirection = Otc::InvalidDirection;
+
+    // Start cooldown: ignore stale server sub-tile updates that arrive
+    // before the server has processed our stop request
+    m_predictionCooldown = true;
+    m_predictionCooldownTimer.restart();
+
+    // Ensure the camera recalculates its srcRect with the captured sub-tile
+    // position. Without this, isMoving() returns false and updateRect skips
+    // requestUpdateMapPosInfo(), leaving the srcRect stale.
+    if (isCameraFollowing()) {
+        g_map.notificateCameraMove(getSubTileOffset());
+    }
+}
+
+void Creature::rejectMovementPrediction()
+{
+    // Unlike stopMovementPrediction, this does NOT capture the current
+    // predicted position. Used when the server rejects a move (cancelWalk).
+    // The character snaps back to its pre-prediction base position (m_subTileX/Y).
+    const auto rejectedDir = m_predictionDirection;
+
+    m_isPredicting = false;
+    m_predictionDirection = Otc::InvalidDirection;
+    m_predictionNextTileWalkable = true;
+    m_subTileMoving = false;
+    m_walkAnimationPhase = 0;
+
+    // Suppress future visual prediction in the rejected direction to prevent
+    // the predict-forward → snap-back flickering loop on retries.
+    m_collisionSuppressed = true;
+    m_collisionDirection = rejectedDir;
+
+    // Notify camera of the corrected position (back to base sub-tile)
+    if (isCameraFollowing()) {
+        g_map.notificateCameraMove(getSubTileOffset());
+    }
+}
+
+void Creature::resetContinuousMovementState()
+{
+    // Reset all prediction state
+    m_isPredicting = false;
+    m_predictionDirection = Otc::InvalidDirection;
+    m_predictionNextTileWalkable = true;
+
+    // Reset sub-tile movement state
+    m_subTileMoving = false;
+    m_walkAnimationPhase = 0;
+
+    // Reset sub-tile transition
+    m_subTileTransitioning = false;
+
+    // Reset sub-tile position to tile center
+    m_subTileX = 128;
+    m_subTileY = 128;
+
+    // Clear cooldown and collision suppression
+    m_predictionCooldown = false;
+    m_collisionSuppressed = false;
+    m_collisionDirection = Otc::InvalidDirection;
+}
+
+void Creature::startSubTileTransition(Otc::Direction dir)
+{
+    const int dx = Position::isDiagonal(dir) ? (dir == Otc::NorthEast || dir == Otc::SouthEast ? 1 : -1) : (dir == Otc::East ? 1 : (dir == Otc::West ? -1 : 0));
+    const int dy = Position::isDiagonal(dir) ? (dir == Otc::SouthEast || dir == Otc::SouthWest ? 1 : -1) : (dir == Otc::South ? 1 : (dir == Otc::North ? -1 : 0));
+
+    // Entry edge: coming from the opposite side
+    m_subTileTransitionStartX = dx > 0 ? 0.0f : (dx < 0 ? 255.0f : 128.0f);
+    m_subTileTransitionStartY = dy > 0 ? 0.0f : (dy < 0 ? 255.0f : 128.0f);
+
+    m_subTileX = static_cast<uint8_t>(m_subTileTransitionStartX);
+    m_subTileY = static_cast<uint8_t>(m_subTileTransitionStartY);
+
+    m_subTileTransitionDuration = getStepDuration(false, dir);
+    m_subTileTransitionTimer.restart();
+    m_subTileTransitioning = true;
+
+    if (!m_subTileMoving) {
+        m_footTimer.restart();
+    }
+    m_subTileMoving = true;
+    m_subTileMoveTimer.restart();
+}
+
+bool Creature::checkNextTileWalkable(Otc::Direction dir) const
+{
+    const Position nextPos = m_position.translatedToDirection(dir);
+    const auto nextTile = g_map.getTile(nextPos);
+    if (!nextTile || !nextTile->isWalkable(true))
+        return false;
+
+    // For diagonal directions, check that at least one intermediate
+    // cardinal tile is passable. This prevents clipping through wall corners.
+    if (Position::isDiagonal(dir)) {
+        Otc::Direction cardinalX = Otc::InvalidDirection;
+        Otc::Direction cardinalY = Otc::InvalidDirection;
+
+        switch (dir) {
+            case Otc::NorthEast: cardinalX = Otc::East;  cardinalY = Otc::North; break;
+            case Otc::NorthWest: cardinalX = Otc::West;  cardinalY = Otc::North; break;
+            case Otc::SouthEast: cardinalX = Otc::East;  cardinalY = Otc::South; break;
+            case Otc::SouthWest: cardinalX = Otc::West;  cardinalY = Otc::South; break;
+            default: break;
+        }
+
+        bool xBlocked = true;
+        bool yBlocked = true;
+
+        if (cardinalX != Otc::InvalidDirection) {
+            const auto tileX = g_map.getTile(m_position.translatedToDirection(cardinalX));
+            if (tileX && tileX->isWalkable(true))
+                xBlocked = false;
+        }
+
+        if (cardinalY != Otc::InvalidDirection) {
+            const auto tileY = g_map.getTile(m_position.translatedToDirection(cardinalY));
+            if (tileY && tileY->isWalkable(true))
+                yBlocked = false;
+        }
+
+        // Both intermediate tiles blocked — can't squeeze through the corner
+        if (xBlocked && yBlocked)
+            return false;
+    }
+
+    return true;
 }
 
 void Creature::jump(const int height, const int duration)
@@ -562,7 +882,7 @@ void Creature::updateJump()
     m_jumpOffset = PointF(height, height);
 
     if (isCameraFollowing()) {
-        g_map.notificateCameraMove(m_walkOffset);
+        g_map.notificateCameraMove(getSubTileOffset());
     }
 
     int nextT = 0;
@@ -592,6 +912,10 @@ void Creature::updateJump()
 
 void Creature::onPositionChange(const Position& newPos, const Position& oldPos)
 {
+    // Tile change means server accepted movement — clear collision suppression
+    m_collisionSuppressed = false;
+    m_collisionDirection = Otc::InvalidDirection;
+
     callLuaFieldUnchecked("onPositionChange", newPos, oldPos);
 }
 
@@ -603,23 +927,50 @@ void Creature::onAppear()
         m_disappearEvent = nullptr;
     }
 
-    if (isCameraFollowing() && m_position != m_oldPosition) {
-        g_map.notificateCameraMove(m_walkOffset);
-    }
-
     // creature appeared the first time or wasn't seen for a long time
     if (m_removed) {
-        stopWalk();
+        resetContinuousMovementState();
         m_removed = false;
+        if (isCameraFollowing()) {
+            g_map.notificateCameraMove(getSubTileOffset());
+        }
         callLuaField("onAppear");
-    } // walk
+    } // creature moved to adjacent tile
     else if (m_oldPosition != m_position && m_oldPosition.isInRange(m_position, 1, 1) && m_allowAppearWalk) {
         m_allowAppearWalk = false;
-        walk(m_oldPosition, m_position);
+        const auto dir = m_oldPosition.getDirectionFromPosition(m_position);
+        setDirection(dir);
+        m_lastStepDirection = dir;
+        const int dx = m_position.x - m_oldPosition.x;
+        const int dy = m_position.y - m_oldPosition.y;
+        if (m_isPredicting) {
+            // Preserve visual continuity: compute current unclamped predicted
+            // position and shift by one tile to get the new base on the new tile.
+            auto [predSubX, predSubY] = getPredictedSubTileF();
+            predSubX -= dx * 255.0f;
+            predSubY -= dy * 255.0f;
+            m_subTileX = static_cast<uint8_t>(std::clamp(predSubX, 0.0f, 255.0f));
+            m_subTileY = static_cast<uint8_t>(std::clamp(predSubY, 0.0f, 255.0f));
+            m_predictionTimer.restart();
+
+            // Recheck walkability and recalculate step duration for the new tile
+            m_predictionNextTileWalkable = checkNextTileWalkable(m_predictionDirection);
+            m_predictionStepDuration = getStepDuration(false, m_predictionDirection);
+        } else {
+            // Non-predicting creature (monster/NPC/other player): start sub-tile transition
+            // from edge to center for smooth visual movement
+            startSubTileTransition(dir);
+        }
+        if (isCameraFollowing()) {
+            g_map.notificateCameraMove(getSubTileOffset());
+        }
         callLuaField("onWalk", m_oldPosition, m_position);
     } // teleport
     else if (m_oldPosition != m_position) {
-        stopWalk();
+        resetContinuousMovementState();
+        if (isCameraFollowing()) {
+            g_map.notificateCameraMove(getSubTileOffset());
+        }
         callLuaField("onDisappear");
         callLuaField("onAppear");
     } // else turn
@@ -637,7 +988,7 @@ void Creature::onDisappear()
     const auto self = static_self_cast<Creature>();
     m_disappearEvent = g_dispatcher.addEvent([self] {
         self->m_removed = true;
-        self->stopWalk();
+        self->resetContinuousMovementState();
 
         self->callLuaField("onDisappear");
 
@@ -676,12 +1027,6 @@ void Creature::updateWalkAnimation()
     if (footAnimPhases == 0)
         return;
 
-    // diagonal walk is taking longer than the animation, thus why don't animate continously
-    if (m_walkTimer.ticksElapsed() < getStepDuration() && m_walkedPixels == g_gameConfig.getSpriteSize()) {
-        m_walkAnimationPhase = 0;
-        return;
-    }
-
     int minFootDelay = 20;
     const int maxFootDelay = footAnimPhases > 2 ? 80 : 205;
     int footAnimDelay = footAnimPhases;
@@ -701,133 +1046,6 @@ void Creature::updateWalkAnimation()
 
         m_footTimer.restart();
     }
-}
-
-void Creature::updateWalkOffset(const uint8_t totalPixelsWalked)
-{
-    m_walkOffset = {};
-    if (m_direction == Otc::North || m_direction == Otc::NorthEast || m_direction == Otc::NorthWest)
-        m_walkOffset.y = g_gameConfig.getSpriteSize() - totalPixelsWalked;
-    else if (m_direction == Otc::South || m_direction == Otc::SouthEast || m_direction == Otc::SouthWest)
-        m_walkOffset.y = totalPixelsWalked - g_gameConfig.getSpriteSize();
-
-    if (m_direction == Otc::East || m_direction == Otc::NorthEast || m_direction == Otc::SouthEast)
-        m_walkOffset.x = totalPixelsWalked - g_gameConfig.getSpriteSize();
-    else if (m_direction == Otc::West || m_direction == Otc::NorthWest || m_direction == Otc::SouthWest)
-        m_walkOffset.x = g_gameConfig.getSpriteSize() - totalPixelsWalked;
-}
-
-void Creature::updateWalkingTile()
-{
-    // determine new walking tile
-    TilePtr newWalkingTile;
-
-    const auto displacementX = g_game.getFeature(Otc::GameNegativeOffset) ? 0 : getDisplacementX();
-    const auto displacementY = g_game.getFeature(Otc::GameNegativeOffset) ? 0 : getDisplacementY();
-
-    const Rect virtualCreatureRect(g_gameConfig.getSpriteSize() + (m_walkOffset.x - displacementX),
-        g_gameConfig.getSpriteSize() + (m_walkOffset.y - displacementY),
-        g_gameConfig.getSpriteSize(), g_gameConfig.getSpriteSize());
-
-    for (int xi = -1; xi <= 1 && !newWalkingTile; ++xi) {
-        for (int yi = -1; yi <= 1 && !newWalkingTile; ++yi) {
-            Rect virtualTileRect((xi + 1) * g_gameConfig.getSpriteSize(), (yi + 1) * g_gameConfig.getSpriteSize(), g_gameConfig.getSpriteSize(), g_gameConfig.getSpriteSize());
-
-            // only render creatures where bottom right is inside tile rect
-            if (virtualTileRect.contains(virtualCreatureRect.bottomRight())) {
-                newWalkingTile = g_map.getOrCreateTile(getPosition().translated(xi, yi, 0));
-            }
-        }
-    }
-
-    if (newWalkingTile == m_walkingTile) return;
-
-    const auto& self = static_self_cast<Creature>();
-
-    if (m_walkingTile)
-        m_walkingTile->removeWalkingCreature(self);
-
-    if (newWalkingTile) {
-        newWalkingTile->addWalkingCreature(self);
-        if (isCameraFollowing())
-            g_map.notificateTileUpdate(newWalkingTile->getPosition(), self, Otc::OPERATION_CLEAN);
-    }
-
-    m_walkingTile = newWalkingTile;
-}
-
-void Creature::nextWalkUpdate()
-{
-    // remove any previous scheduled walk updates
-    if (m_walkUpdateEvent)
-        m_walkUpdateEvent->cancel();
-
-    // do the update
-    updateWalk();
-    onWalking();
-
-    if (!m_walking) return;
-
-    auto action = [self = static_self_cast<Creature>()] {
-        self->m_walkUpdateEvent = nullptr;
-        self->nextWalkUpdate();
-    };
-
-    m_walkUpdateEvent = isCameraFollowing() ? g_dispatcher.addEvent(action) : g_dispatcher.scheduleEvent(action, m_stepCache.walkDuration);
-}
-
-void Creature::updateWalk()
-{
-    const float walkTicksPerPixel = getStepDuration(true) / static_cast<float>(g_gameConfig.getSpriteSize());
-
-    const int totalPixelsWalked = std::min<int>(m_walkTimer.ticksElapsed() / walkTicksPerPixel, g_gameConfig.getSpriteSize());
-
-    // needed for paralyze effect
-    m_walkedPixels = std::max<int>(m_walkedPixels, totalPixelsWalked);
-
-    const auto oldWalkOffset = m_walkOffset;
-
-    updateWalkAnimation();
-    updateWalkOffset(m_walkedPixels);
-    updateWalkingTile();
-
-    if (isCameraFollowing() && oldWalkOffset != m_walkOffset) {
-        g_map.notificateCameraMove(m_walkOffset);
-    }
-
-    if (m_walkedPixels == g_gameConfig.getSpriteSize()) {
-        terminateWalk();
-    }
-}
-
-void Creature::terminateWalk()
-{
-    // remove any scheduled walk update
-    if (m_walkUpdateEvent) {
-        m_walkUpdateEvent->cancel();
-        m_walkUpdateEvent = nullptr;
-    }
-
-    // now the walk has ended, do any scheduled turn
-    if (m_walkTurnDirection != Otc::InvalidDirection) {
-        setDirection(m_walkTurnDirection);
-        m_walkTurnDirection = Otc::InvalidDirection;
-    }
-
-    if (m_walkingTile) {
-        m_walkingTile->removeWalkingCreature(static_self_cast<Creature>());
-        m_walkingTile = nullptr;
-    }
-
-    m_walkedPixels = 0;
-    m_walkOffset = {};
-    m_walking = false;
-
-    const auto self = static_self_cast<Creature>();
-    m_walkFinishAnimEvent = g_dispatcher.scheduleEvent([self] {
-        self->m_walkAnimationPhase = 0;
-        self->m_walkFinishAnimEvent = nullptr;
-    }, g_game.getServerBeat());
 }
 
 void Creature::setHealthPercent(const uint8_t healthPercent)
@@ -949,12 +1167,10 @@ void Creature::setSpeed(uint16_t speed)
         } else m_calculatedStepSpeed = 1;
     }
 
-    if (isLocalPlayer())
-        static_self_cast<LocalPlayer>()->registerAdjustInvalidPosEvent();
-
-    // speed can change while walking (utani hur, paralyze, etc..)
-    if (m_walking)
-        nextWalkUpdate();
+    // Recalculate prediction step duration if speed changes during movement
+    if (isLocalPlayer() && m_isPredicting) {
+        m_predictionStepDuration = getStepDuration(false, m_predictionDirection);
+    }
 
     callLuaField("onSpeedChange", m_speed, oldSpeed);
 }
@@ -1046,34 +1262,7 @@ void Creature::updateShield()
         m_showShieldTexture = true;
 }
 
-int getSmoothedElevation(const Creature* creature, const int currentElevation, const float factor) {
-    const auto& fromPos = creature->getLastStepFromPosition();
-    const auto& toPos = creature->getLastStepToPosition();
-    const auto& fromTile = g_map.getTile(fromPos);
-    const auto& toTile = g_map.getTile(toPos);
-
-    if (!fromTile || !toTile) {
-        return currentElevation;
-    }
-
-    const int fromElevation = fromTile->getDrawElevation();
-    const int toElevation = toTile->getDrawElevation();
-
-    return fromElevation != toElevation ? fromElevation + factor * (toElevation - fromElevation) : currentElevation;
-}
-
 int Creature::getDrawElevation() {
-    if (m_walkingTile) {
-        int elevation = m_walkingTile->getDrawElevation();
-
-        if (g_game.getFeature(Otc::GameSmoothWalkElevation)) {
-            const float factor = std::clamp<float>(getWalkTicksElapsed() / static_cast<float>(m_stepCache.getDuration(m_lastStepDirection)), .0f, 1.f);
-            elevation = getSmoothedElevation(this, elevation, factor);
-        }
-
-        return elevation;
-    }
-
     if (const auto& tile = g_map.getTile(getPosition()))
         return tile->getDrawElevation();
 
@@ -1088,7 +1277,7 @@ uint16_t Creature::getStepDuration(const bool ignoreDiagonal, const Otc::Directi
         return 0;
 
     const auto& tilePos = dir == Otc::InvalidDirection ?
-        m_lastStepToPosition : getPosition().translatedToDirection(dir);
+        getPosition() : getPosition().translatedToDirection(dir);
 
     const auto& tile = g_map.getTile(tilePos.isValid() ? tilePos : getPosition());
 
@@ -1116,18 +1305,10 @@ uint16_t Creature::getStepDuration(const bool ignoreDiagonal, const Otc::Directi
 
         m_stepCache.walkDuration = std::min<int>(stepDuration / g_gameConfig.getSpriteSize(), DrawPool::FPS60);
 
-        m_stepCache.diagonalDuration = stepDuration *
-            (g_game.getClientVersion() > 810 || g_gameConfig.isForcingNewWalkingFormula()
-                ? (isPlayer() ? g_gameConfig.getPlayerDiagonalWalkSpeed() : g_gameConfig.getCreatureDiagonalWalkSpeed())
-                : 2);
+        m_stepCache.diagonalDuration = stepDuration;
     }
 
     auto duration = ignoreDiagonal ? m_stepCache.duration : m_stepCache.getDuration(m_lastStepDirection);
-
-    if (isCameraFollowing() && isLocalPlayer()) {
-        const auto& localPlayer = static_self_cast<LocalPlayer>();
-        duration += 10 * std::max<int>(1, localPlayer->getPreWalkingSize());
-    }
 
     return duration;
 }
@@ -1299,24 +1480,20 @@ void Creature::setStaticWalking(const uint16_t v) {
     if (!canDraw())
         return;
 
-    if (m_walkUpdateEvent) {
-        m_walkUpdateEvent->cancel();
-        m_walkUpdateEvent = nullptr;
-    }
-
     m_walkingAnimationSpeed = v;
 
     if (v == 0) {
         m_walkAnimationPhase = 0;
+        m_subTileMoving = false;
         return;
     }
 
-    m_walkUpdateEvent = g_dispatcher.cycleEvent([self = static_self_cast<Creature>()] {
-        self->updateWalkAnimation();
-        if (self.use_count() == 1) {
-            self->m_walkUpdateEvent->cancel();
-        }
-    }, std::min<int>(v / g_gameConfig.getSpriteSize(), DrawPool::FPS60));
+    // Static walking uses sub-tile moving to drive walk animation each frame
+    if (!m_subTileMoving) {
+        m_footTimer.restart();
+    }
+    m_subTileMoving = true;
+    m_subTileMoveTimer.restart();
 }
 
 void Creature::setWidgetInformation(const UIWidgetPtr& info) {

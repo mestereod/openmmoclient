@@ -383,7 +383,6 @@ function inventoryController:onGameStart()
 
     inventoryController:registerEvents(g_game, {
         onWalk = walkEvent,
-        onAutoWalk = walkEvent,
         onFightModeChange = combatEvent,
         onChaseModeChange = combatEvent,
         onSafeFightChange = combatEvent,

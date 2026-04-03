@@ -89,12 +89,9 @@ public:
     void showStaticSquare(const Color& color) { m_showStaticSquare = true; m_staticSquareColor = color; }
     void hideStaticSquare() { m_showStaticSquare = false; }
 
-    // walk related
     void turn(Otc::Direction direction);
     void jump(int height, int duration);
     void allowAppearWalk() { m_allowAppearWalk = true; }
-    virtual void walk(const Position& oldPos, const Position& newPos);
-    virtual void stopWalk();
 
     bool isDrawingOutfitColor() const { return m_drawOutfitColor; }
     void setDrawOutfitColor(const bool draw) { m_drawOutfitColor = draw; }
@@ -102,9 +99,6 @@ public:
     int getDisplacementX() const override;
     int getDisplacementY() const override;
     int getExactSize(int layer = 0, int xPattern = 0, int yPattern = 0, int zPattern = 0, int animationPhase = 0) override;
-
-    float getStepProgress() { return m_walkTimer.ticksElapsed() / static_cast<float>(m_stepCache.duration); }
-    float getStepTicksLeft() { return static_cast<float>(m_stepCache.getDuration(m_lastStepDirection)) - m_walkTimer.ticksElapsed(); }
 
     uint8_t getSkull() { return m_skull; }
     uint8_t getShield() { return m_shield; }
@@ -122,7 +116,7 @@ public:
     uint32_t getMasterId() { return m_masterId; }
     std::string getName() { return m_name.getText(); }
 
-    Point getDrawOffset() { return Point(-1, -1) * getDrawElevation() + m_walkOffset; }
+    Point getDrawOffset() { return Point(-1, -1) * getDrawElevation() + getSubTileOffset(); }
     int getDrawElevation();
 
     Otc::Direction getDirection() { return m_direction; }
@@ -132,19 +126,14 @@ public:
     bool hasMountShader() const { return m_mountShaderId > 0; }
 
     Point getDisplacement() const override;
-    Point getWalkOffset() { return m_walkOffset; }
     PointF getJumpOffset() { return m_jumpOffset; }
-    Position getLastStepFromPosition() const { return m_lastStepFromPosition; }
-    Position getLastStepToPosition() const { return m_lastStepToPosition; }
     bool isTimedSquareVisible() { return m_showTimedSquare; }
     Color getTimedSquareColor() { return m_timedSquareColor; }
     bool isStaticSquareVisible() { return m_showStaticSquare; }
     Color getStaticSquareColor() { return m_staticSquareColor; }
 
-    ticks_t getWalkTicksElapsed() { return m_walkTimer.ticksElapsed(); }
-
     bool isPassable() const { return m_passable; }
-    bool isWalking() { return m_walking; }
+    bool isMoving() { return m_subTileMoving || m_isPredicting || m_subTileTransitioning; }
 
     bool isRemoved() { return m_removed; }
     bool isRemoved() const { return m_removed; }
@@ -169,6 +158,21 @@ public:
     void setTyping(bool typing);
     void sendTyping();
     bool getTyping() { return m_typing; }
+
+    void setSubTilePosition(uint8_t subX, uint8_t subY);
+    uint8_t getSubTileX() const { return m_subTileX; }
+    uint8_t getSubTileY() const { return m_subTileY; }
+    Point getSubTileOffset() const;
+
+    // Client-side movement prediction
+    void startMovementPrediction(Otc::Direction dir);
+    void stopMovementPrediction();
+    void rejectMovementPrediction();
+    void resetContinuousMovementState();
+    std::pair<float, float> getPredictedSubTileF() const;
+    bool isMovementPredicting() const { return m_isPredicting; }
+    Otc::Direction getPredictionDirection() const { return m_predictionDirection; }
+    void clearPredictionCooldown() { m_predictionCooldown = false; }
     void setTypingIconTexture(const std::string& filename);
     void setBounce(const uint8_t minHeight, const uint8_t height, const uint16_t speed) {
         m_bounce = { .minHeight =
@@ -216,11 +220,6 @@ minHeight,
     const std::vector<PaperdollPtr>& getPaperdolls() { return m_paperdolls; };
 
 protected:
-    virtual void terminateWalk();
-    virtual void onWalking() {};
-    void updateWalkOffset(uint8_t totalPixelsWalked);
-    void updateWalk();
-
     void setOldPositionSilently(const Position& pos) { m_oldPosition = pos; }
     void setRemovedSilently(const bool removed) { m_removed = removed; }
 
@@ -233,21 +232,14 @@ protected:
     void onDeath();
     void onPositionChange(const Position& newPos, const Position& oldPos) override;
 
-    bool m_walking{ false };
-
-    Point m_walkOffset;
     Otc::Direction m_direction{ Otc::South };
 
-    Timer m_walkTimer;
-
-    int16_t m_lastMapDuration = -1;
-
 private:
-    void nextWalkUpdate();
     void updateJump();
     void updateShield();
-    void updateWalkingTile();
     void updateWalkAnimation();
+    void startSubTileTransition(Otc::Direction dir);
+    bool checkNextTileWalkable(Otc::Direction dir) const;
 
     uint16_t getCurrentAnimationPhase(bool mount = false);
 
@@ -281,8 +273,6 @@ private:
 
     UIWidgetPtr m_widgetInformation;
 
-    TilePtr m_walkingTile;
-
     std::unique_ptr<IconRenderData> m_icons;
 
     TexturePtr m_skullTexture;
@@ -292,8 +282,6 @@ private:
     TexturePtr m_iconTexture;
     TexturePtr m_typingIconTexture;
 
-    EventPtr m_walkUpdateEvent;
-    ScheduledEventPtr m_walkFinishAnimEvent;
     ScheduledEventPtr m_outfitColorUpdateEvent;
 
     EventPtr m_disappearEvent;
@@ -302,8 +290,6 @@ private:
     std::string m_nameShader;
     CachedStep m_stepCache;
 
-    Position m_lastStepToPosition;
-    Position m_lastStepFromPosition;
     Position m_oldPosition;
 
     Timer m_footTimer;
@@ -340,9 +326,39 @@ private:
     uint8_t m_shield{ Otc::ShieldNone };
     uint8_t m_emblem{ Otc::EmblemNone };
 
-    // walk related
     uint8_t m_walkAnimationPhase{ 0 };
-    uint8_t m_walkedPixels{ 0 };
+
+    // sub-tile position (0-255 subdivisions within a tile)
+    uint8_t m_subTileX{ 128 };
+    uint8_t m_subTileY{ 128 };
+
+    Timer m_subTileMoveTimer;
+    bool m_subTileMoving{ false };
+
+    // Client-side movement prediction fields
+    Otc::Direction m_predictionDirection{ Otc::InvalidDirection };
+    bool m_isPredicting{ false };
+    Timer m_predictionTimer;
+    uint16_t m_predictionStepDuration{ 0 };
+
+    // Whether the next tile in the prediction direction is walkable (client-side collision)
+    bool m_predictionNextTileWalkable{ true };
+
+    // Post-prediction cooldown: ignore stale server sub-tile updates
+    Timer m_predictionCooldownTimer;
+    bool m_predictionCooldown{ false };
+
+    // Collision suppression: after cancelWalk, suppress visual prediction
+    // in the same direction to prevent flickering
+    bool m_collisionSuppressed{ false };
+    Otc::Direction m_collisionDirection{ Otc::InvalidDirection };
+
+    // Sub-tile transition: smooth interpolation from tile edge to center for non-predicting creatures
+    bool m_subTileTransitioning{ false };
+    Timer m_subTileTransitionTimer;
+    uint16_t m_subTileTransitionDuration{ 0 };
+    float m_subTileTransitionStartX{ 128.0f };
+    float m_subTileTransitionStartY{ 128.0f };
 
     uint8_t m_exactSize{ 0 };
 
@@ -351,7 +367,6 @@ private:
     // Mount Shader
     uint8_t m_mountShaderId{ 0 };
 
-    Otc::Direction m_walkTurnDirection{ Otc::InvalidDirection };
     Otc::Direction m_lastStepDirection{ Otc::InvalidDirection };
 
     bool m_shieldBlink{ false };

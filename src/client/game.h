@@ -168,7 +168,6 @@ public:
 
     // walk related
     bool walk(Otc::Direction direction);
-    void autoWalk(const std::vector<Otc::Direction>& dirs, const Position& startPos);
     void forceWalk(Otc::Direction direction);
     void turn(Otc::Direction direction);
     void stop();

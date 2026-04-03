@@ -31,9 +31,6 @@ public:
     void unlockWalk() { m_walkLockExpiration = 0; }
     void lockWalk(uint16_t millis = 250);
     bool isWalkLocked();
-    void stopAutoWalk();
-
-    bool autoWalk(const Position& destination, bool retry = false);
     bool canWalk(bool ignoreLock = false);
 
     void setStates(uint64_t states);
@@ -122,15 +119,12 @@ public:
 
     bool hasSight(const Position& pos);
     bool isKnown() { return m_known; }
-    bool isServerWalking() { return m_serverWalk; }
-    bool isPreWalking() { return !m_preWalks.empty(); }
 
     bool isSupplyStashAvailable() const { return m_isSupplyStashAvailable; }
     void setSupplyStashAvailable(bool available) {
         m_isSupplyStashAvailable = available;
     }
 
-    bool isAutoWalking() { return m_autoWalkDestination.isValid(); }
     bool isPremium() { return m_premium; }
     bool isPendingGame() const { return m_pending; }
     bool isParalyzed() const { return (m_states & Otc::IconParalyze) == Otc::IconParalyze; }
@@ -141,13 +135,6 @@ public:
 
     void onPositionChange(const Position& newPos, const Position& oldPos) override;
 
-    void preWalk(Otc::Direction direction);
-
-    Position getPosition() override { return isPreWalking() ? m_preWalks.back() : m_position; }
-    void resetPreWalk() { m_preWalks.clear(); }
-    auto getPreWalkingSize() { return m_preWalks.size(); }
-
-
 private:
     struct Skill
     {
@@ -156,30 +143,12 @@ private:
         uint16_t levelPercent{ 0 };
     };
 
-    void onWalking() override;
-
-    void walk(const Position& oldPos, const Position& newPos) override;
-    void terminateWalk() override;
     void cancelWalk(Otc::Direction direction = Otc::InvalidDirection);
-    void cancelAdjustInvalidPosEvent();
-    void registerAdjustInvalidPosEvent();
 
-    bool retryAutoWalk();
-
-    // walk related
-    Position m_lastAutoWalkPosition;
-    Position m_autoWalkDestination;
-    std::deque<Position> m_preWalks;
-
-    ScheduledEventPtr m_adjustInvalidPosEvent;
-    ScheduledEventPtr m_autoWalkContinueEvent;
     ticks_t m_walkLockExpiration{ 0 };
-
-    bool m_knownCompletePath{ false };
     bool m_premium{ false };
     bool m_known{ false };
     bool m_pending{ false };
-    bool m_serverWalk{ false };
     bool m_serene{ false };
 
     bool m_isSupplyStashAvailable{ false };
@@ -193,8 +162,6 @@ private:
     std::map<uint8_t, double> m_combatAbsorbValues;
     std::map<Otc::ExperienceRate_t, uint16_t> m_experienceRates;
     std::map<std::pair<uint16_t, uint8_t>, uint32_t> m_inventoryCountCache;
-
-    uint8_t m_autoWalkRetries{ 0 };
 
     uint64_t m_states{ 0 };
     uint8_t m_vocation{ 0 };

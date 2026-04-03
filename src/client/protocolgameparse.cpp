@@ -153,6 +153,9 @@ void ProtocolGame::parseMessage(const InputMessagePtr& msg)
                 case Proto::GameServerCreatureTyping:
                     parseCreatureTyping(msg);
                     break;
+                case Proto::GameServerCreatureWorldPosition:
+                    parseCreatureWorldPosition(msg);
+                    break;
                 case Proto::GameServerAttachedPaperdoll:
                     parseAttachedPaperdoll(msg);
                     break;
@@ -3766,9 +3769,6 @@ int ProtocolGame::setTileDescription(const InputMessagePtr& msg, const Position 
         }
 
         const auto& thing = getThing(msg);
-        if (thing->isLocalPlayer()) {
-            thing->static_self_cast<LocalPlayer>()->resetPreWalk();
-        }
 
         g_map.addThing(thing, position, stackPos);
     }
@@ -6317,6 +6317,21 @@ void ProtocolGame::parseCreatureTyping(const InputMessagePtr& msg)
     }
 
     creature->setTyping(typing);
+}
+
+void ProtocolGame::parseCreatureWorldPosition(const InputMessagePtr& msg)
+{
+    const uint32_t creatureId = msg->getU32();
+    const uint8_t subTileX = msg->getU8();
+    const uint8_t subTileY = msg->getU8();
+
+    const auto& creature = g_map.getCreatureById(creatureId);
+    if (!creature) {
+        g_logger.traceDebug("ProtocolGame::parseCreatureWorldPosition: could not get creature with id {}", creatureId);
+        return;
+    }
+
+    creature->setSubTilePosition(subTileX, subTileY);
 }
 
 void ProtocolGame::parseFeatures(const InputMessagePtr& msg)
