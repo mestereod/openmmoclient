@@ -1783,6 +1783,15 @@ void ProtocolGame::parseWorldLight(const InputMessagePtr& msg)
 void ProtocolGame::parseMagicEffect(const InputMessagePtr& msg)
 {
     const auto& pos = getPosition(msg);
+
+    // Read sub-tile position for OTCR clients with SubTileEffects feature
+    uint8_t subTileX = 128;
+    uint8_t subTileY = 128;
+    if (g_game.getFeature(Otc::GameSubTileEffects) && g_game.getProtocolVersion() >= 1203) {
+        subTileX = msg->getU8();
+        subTileY = msg->getU8();
+    }
+
     if (g_game.getProtocolVersion() >= 1203) {
         uint8_t effectType = msg->getU8();
         while (effectType != Otc::MAGIC_EFFECTS_END_LOOP) {
@@ -1798,6 +1807,15 @@ void ProtocolGame::parseMagicEffect(const InputMessagePtr& msg)
                     const uint16_t shotId = g_game.getFeature(Otc::GameEffectU16) ? msg->getU16() : msg->getU8();
                     const auto offsetX = static_cast<int8_t>(msg->getU8());
                     const auto offsetY = static_cast<int8_t>(msg->getU8());
+
+                    // Read destination sub-tile for OTCR
+                    uint8_t toSubTileX = 128;
+                    uint8_t toSubTileY = 128;
+                    if (g_game.getFeature(Otc::GameSubTileEffects)) {
+                        toSubTileX = msg->getU8();
+                        toSubTileY = msg->getU8();
+                    }
+
                     if (!g_things.isValidDatId(shotId, ThingCategoryMissile)) {
                         g_logger.traceError("invalid missile id {}", shotId);
                         return;
@@ -1807,8 +1825,10 @@ void ProtocolGame::parseMagicEffect(const InputMessagePtr& msg)
                     missile->setId(shotId);
 
                     if (effectType == Otc::MAGIC_EFFECTS_CREATE_DISTANCEEFFECT) {
+                        missile->setSubTileOffsets(subTileX, subTileY, toSubTileX, toSubTileY);
                         missile->setPath(pos, Position(pos.x + offsetX, pos.y + offsetY, pos.z));
                     } else {
+                        missile->setSubTileOffsets(toSubTileX, toSubTileY, subTileX, subTileY);
                         missile->setPath(Position(pos.x + offsetX, pos.y + offsetY, pos.z), pos);
                     }
 
@@ -1825,6 +1845,7 @@ void ProtocolGame::parseMagicEffect(const InputMessagePtr& msg)
 
                     const auto& effect = std::make_shared<Effect>();
                     effect->setId(effectId);
+                    effect->setSubTileOffset(subTileX, subTileY);
                     g_map.addThing(effect, pos);
                     break;
                 }

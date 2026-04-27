@@ -54,17 +54,31 @@ void Missile::draw(const Point& dest, const bool drawThings, LightView* lightVie
     if (drawThings && hasShader())
         g_drawPool.setShaderProgram(g_shaders.getShaderById(m_shaderId), true/*, shaderAction*/);
 
-    thingType->draw(dest + m_delta * fraction * g_drawPool.getScaleFactor(), 0, m_numPatternX, m_numPatternY, 0, 0, Color::white, drawThings, lightView);
+    thingType->draw(dest + (m_startOffset + m_delta * fraction) * g_drawPool.getScaleFactor(), 0, m_numPatternX, m_numPatternY, 0, 0, Color::white, drawThings, lightView);
     g_drawPool.resetDrawOrder();
 }
 
 void Missile::setPath(const Position& fromPosition, const Position& toPosition)
 {
     m_position = fromPosition;
-    m_delta = Point(toPosition.x - fromPosition.x, toPosition.y - fromPosition.y);
 
-    const float deltaLength = m_delta.length();
-    if (deltaLength == 0) {
+    const int spriteSize = g_gameConfig.getSpriteSize();
+
+    // Compute sub-tile pixel offsets
+    const float fromSubOffX = (m_fromSubTileX / 255.0f - 0.5f) * spriteSize;
+    const float fromSubOffY = (m_fromSubTileY / 255.0f - 0.5f) * spriteSize;
+    const float toSubOffX = (m_toSubTileX / 255.0f - 0.5f) * spriteSize;
+    const float toSubOffY = (m_toSubTileY / 255.0f - 0.5f) * spriteSize;
+
+    m_startOffset = Point(static_cast<int>(fromSubOffX), static_cast<int>(fromSubOffY));
+
+    // Total travel = tile delta in pixels + sub-tile difference in pixels
+    const float totalDeltaX = static_cast<float>(toPosition.x - fromPosition.x) * spriteSize + (toSubOffX - fromSubOffX);
+    const float totalDeltaY = static_cast<float>(toPosition.y - fromPosition.y) * spriteSize + (toSubOffY - fromSubOffY);
+    m_delta = Point(static_cast<int>(totalDeltaX), static_cast<int>(totalDeltaY));
+
+    const float deltaLength = Point(toPosition.x - fromPosition.x, toPosition.y - fromPosition.y).length();
+    if (deltaLength == 0 && m_fromSubTileX == m_toSubTileX && m_fromSubTileY == m_toSubTileY) {
         g_dispatcher.addEvent([self = asMissile()] {
             g_map.removeThing(self);
         });
@@ -73,8 +87,7 @@ void Missile::setPath(const Position& fromPosition, const Position& toPosition)
 
     setDirection(fromPosition.getDirectionFromPosition(toPosition));
 
-    m_duration = (g_gameConfig.getMissileTicksPerFrame() * 2) * std::sqrt(deltaLength);
-    m_delta *= g_gameConfig.getSpriteSize();
+    m_duration = (g_gameConfig.getMissileTicksPerFrame() * 2) * std::sqrt(std::max(deltaLength, 1.0f));
     m_animationTimer.restart();
     m_distance = fromPosition.distance(toPosition);
 

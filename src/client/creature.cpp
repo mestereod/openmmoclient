@@ -83,10 +83,9 @@ void Creature::draw(const Point& dest, const bool drawThings, LightView* /*light
     // Complete sub-tile transition when duration elapsed
     if (m_subTileTransitioning && m_subTileTransitionTimer.ticksElapsed() >= m_subTileTransitionDuration) {
         m_subTileTransitioning = false;
-        m_subTileMoving = false;
-        m_subTileX = 128;
-        m_subTileY = 128;
-        m_walkAnimationPhase = 0;
+        // Don't reset m_subTileX/Y to 128,128 — server sub-tile updates
+        // may have arrived during the transition with the actual position.
+        // Walk animation timeout (above) will stop animation if no more updates.
     }
 
     // Drive walk animation every frame during movement
@@ -506,13 +505,19 @@ void Creature::internalDraw(Point dest, const Color& color)
 void Creature::turn(const Otc::Direction direction)
 {
     setDirection(direction);
+    m_hasServerTurn = true;
+    m_serverTurnTimer.restart();
 }
 
 void Creature::setSubTilePosition(uint8_t subX, uint8_t subY)
 {
     // During prediction, ignore server sub-tile updates entirely.
-    // The client prediction is ahead by network latency; applying server values
-    // would cause the character to snap backward. Server values are stale by design.
+    // The client prediction is ahead by network latency; applying server
+    // values would snap the character backward every update, creating a
+    // sawtooth jitter on the camera that makes all other creatures on
+    // screen appear to move in jerky intervals.
+    // The 255→256 sub-tile scale fix ensures the math is identical between
+    // server and client, so residual float drift is negligible (< 0.125 px).
     // Tile crossings are handled separately via onAppear().
     if (m_isPredicting) {
         return;
@@ -531,14 +536,37 @@ void Creature::setSubTilePosition(uint8_t subX, uint8_t subY)
     const uint8_t oldSubX = m_subTileX;
     const uint8_t oldSubY = m_subTileY;
 
-    m_subTileX = subX;
-    m_subTileY = subY;
-
-    // If sub-tile position changed, infer movement direction and update walk animation
+    // If sub-tile position changed, update walk animation state
     if (oldSubX != subX || oldSubY != subY) {
+        // Capture current visual position BEFORE updating target values.
+        // This is the interpolation start point for smooth sub-tile movement.
+        auto [curVisualX, curVisualY] = getPredictedSubTileF();
+
+        m_subTileX = subX;
+        m_subTileY = subY;
+
         // Server is moving us — clear collision suppression
         m_collisionSuppressed = false;
         m_collisionDirection = Otc::InvalidDirection;
+
+        // Start smooth micro-interpolation from current visual position to
+        // new server value. This makes other creatures' movement as smooth
+        // as the local player's prediction, eliminating the discrete jumps
+        // every 20ms that cause animation/position mismatch.
+        // Skip if a tile-crossing transition is already active — it already
+        // provides smooth motion and dynamically targets m_subTileX/Y.
+        // Also skip the very first sub-tile update (m_subTileMoving == false)
+        // because m_lastSubTileUpdateTimer has no valid reference interval yet
+        // and would produce an oversized duration (clamped to max).
+        if (!m_subTileTransitioning && m_subTileMoving) {
+            m_subTileTransitionStartX = curVisualX;
+            m_subTileTransitionStartY = curVisualY;
+            const uint16_t elapsed = m_lastSubTileUpdateTimer.ticksElapsed();
+            m_subTileTransitionDuration = std::clamp<uint16_t>(elapsed * 3 / 2, 15, 150);
+            m_subTileTransitionTimer.restart();
+            m_subTileTransitioning = true;
+        }
+        m_lastSubTileUpdateTimer.restart();
 
         const int dx = static_cast<int>(subX) - static_cast<int>(oldSubX);
         const int dy = static_cast<int>(subY) - static_cast<int>(oldSubY);
@@ -554,10 +582,25 @@ void Creature::setSubTilePosition(uint8_t subX, uint8_t subY)
         else if (dy > 0) dir = Otc::South;
 
         if (dir != Otc::InvalidDirection) {
-            setDirection(dir);
+            // Only infer direction from sub-tile deltas for other creatures.
+            // The local player's direction is managed by startMovementPrediction()
+            // and server turn packets (creature->turn()). Inferring it here from
+            // stale server sub-tile updates can cause desync with what other
+            // players see (they receive the server's authoritative direction).
+            if (!isLocalPlayer()) {
+                const int magnitude = std::abs(dx) + std::abs(dy);
+                // Only infer direction from significant sub-tile deltas (>= 5).
+                // Small deltas are position corrections, not actual movement.
+                // Also respect recent server turn packets.
+                if (magnitude >= 5 && (!m_hasServerTurn || m_serverTurnTimer.ticksElapsed() > 100)) {
+                    setDirection(dir);
+                    m_hasServerTurn = false;
+                }
+            }
             m_lastStepDirection = dir;
             if (!m_subTileMoving) {
                 m_footTimer.restart();
+                getStepDuration(true); // Populate step cache for walk animation timing
             }
             m_subTileMoving = true;
             m_subTileMoveTimer.restart();
@@ -573,14 +616,16 @@ void Creature::setSubTilePosition(uint8_t subX, uint8_t subY)
 
 std::pair<float, float> Creature::getPredictedSubTileF() const
 {
-    float subX = static_cast<float>(m_subTileX);
-    float subY = static_cast<float>(m_subTileY);
+    float subX = m_isPredicting ? m_predictionBaseX : static_cast<float>(m_subTileX);
+    float subY = m_isPredicting ? m_predictionBaseY : static_cast<float>(m_subTileY);
 
-    // Sub-tile transition: interpolate from start position to center (128,128)
+    // Sub-tile transition: interpolate from start position to current server target
     if (m_subTileTransitioning && m_subTileTransitionDuration > 0) {
         const float progress = std::min(1.0f, static_cast<float>(m_subTileTransitionTimer.ticksElapsed()) / static_cast<float>(m_subTileTransitionDuration));
-        subX = m_subTileTransitionStartX + (128.0f - m_subTileTransitionStartX) * progress;
-        subY = m_subTileTransitionStartY + (128.0f - m_subTileTransitionStartY) * progress;
+        const float targetX = subX;  // m_subTileX — dynamic target updated by server data
+        const float targetY = subY;  // m_subTileY — dynamic target updated by server data
+        subX = m_subTileTransitionStartX + (targetX - m_subTileTransitionStartX) * progress;
+        subY = m_subTileTransitionStartY + (targetY - m_subTileTransitionStartY) * progress;
         return { subX, subY };
     }
 
@@ -627,7 +672,7 @@ Point Creature::getSubTileOffset() const
     auto [subX, subY] = getPredictedSubTileF();
     const int spriteSize = g_gameConfig.getSpriteSize();
     // Convert sub-tile (0-255) to pixel offset relative to tile center
-    // 128 = center (0 offset), 0 = -spriteSize/2, 255 = +spriteSize/2
+    // 128 = center (0 offset), 0 = -spriteSize/2, 255 = one full tile
     const int offsetX = static_cast<int>((subX / 255.0f - 0.5f) * spriteSize);
     const int offsetY = static_cast<int>((subY / 255.0f - 0.5f) * spriteSize);
     return { offsetX, offsetY };
@@ -656,8 +701,10 @@ void Creature::startMovementPrediction(Otc::Direction dir)
     // position as the new base before changing direction
     if (m_isPredicting) {
         auto [subX, subY] = getPredictedSubTileF();
-        m_subTileX = static_cast<uint8_t>(std::clamp(subX, 0.0f, 255.0f));
-        m_subTileY = static_cast<uint8_t>(std::clamp(subY, 0.0f, 255.0f));
+        m_predictionBaseX = std::clamp(subX, 0.0f, 255.0f);
+        m_predictionBaseY = std::clamp(subY, 0.0f, 255.0f);
+        m_subTileX = static_cast<uint8_t>(std::min(m_predictionBaseX, 255.0f));
+        m_subTileY = static_cast<uint8_t>(std::min(m_predictionBaseY, 255.0f));
     }
 
     // Set direction so the character faces the intended direction even if
@@ -700,6 +747,8 @@ void Creature::startMovementPrediction(Otc::Direction dir)
 
     if (!m_isPredicting) {
         m_isPredicting = true;
+        m_predictionBaseX = static_cast<float>(m_subTileX);
+        m_predictionBaseY = static_cast<float>(m_subTileY);
     }
     m_predictionTimer.restart();
 }
@@ -712,6 +761,8 @@ void Creature::stopMovementPrediction()
         auto [subX, subY] = getPredictedSubTileF();
         m_subTileX = static_cast<uint8_t>(std::clamp(subX, 0.0f, 255.0f));
         m_subTileY = static_cast<uint8_t>(std::clamp(subY, 0.0f, 255.0f));
+        m_predictionBaseX = static_cast<float>(m_subTileX);
+        m_predictionBaseY = static_cast<float>(m_subTileY);
     }
 
     m_isPredicting = false;
@@ -724,8 +775,7 @@ void Creature::stopMovementPrediction()
     m_collisionSuppressed = false;
     m_collisionDirection = Otc::InvalidDirection;
 
-    // Start cooldown: ignore stale server sub-tile updates that arrive
-    // before the server has processed our stop request
+    // Brief cooldown: ignore first few stale server sub-tile updates
     m_predictionCooldown = true;
     m_predictionCooldownTimer.restart();
 
@@ -744,6 +794,8 @@ void Creature::rejectMovementPrediction()
     // The character snaps back to its pre-prediction base position (m_subTileX/Y).
     const auto rejectedDir = m_predictionDirection;
 
+    m_predictionBaseX = static_cast<float>(m_subTileX);
+    m_predictionBaseY = static_cast<float>(m_subTileY);
     m_isPredicting = false;
     m_predictionDirection = Otc::InvalidDirection;
     m_predictionNextTileWalkable = true;
@@ -778,6 +830,8 @@ void Creature::resetContinuousMovementState()
     // Reset sub-tile position to tile center
     m_subTileX = 128;
     m_subTileY = 128;
+    m_predictionBaseX = 128.0f;
+    m_predictionBaseY = 128.0f;
 
     // Clear cooldown and collision suppression
     m_predictionCooldown = false;
@@ -790,14 +844,28 @@ void Creature::startSubTileTransition(Otc::Direction dir)
     const int dx = Position::isDiagonal(dir) ? (dir == Otc::NorthEast || dir == Otc::SouthEast ? 1 : -1) : (dir == Otc::East ? 1 : (dir == Otc::West ? -1 : 0));
     const int dy = Position::isDiagonal(dir) ? (dir == Otc::SouthEast || dir == Otc::SouthWest ? 1 : -1) : (dir == Otc::South ? 1 : (dir == Otc::North ? -1 : 0));
 
-    // Entry edge: coming from the opposite side
-    m_subTileTransitionStartX = dx > 0 ? 0.0f : (dx < 0 ? 255.0f : 128.0f);
-    m_subTileTransitionStartY = dy > 0 ? 0.0f : (dy < 0 ? 255.0f : 128.0f);
+    // Capture the current visual position before modifying anything.
+    // This accounts for ongoing transitions (mid-step tile crossings)
+    // and ensures visual continuity.
+    auto [curVisualX, curVisualY] = getPredictedSubTileF();
 
-    m_subTileX = static_cast<uint8_t>(m_subTileTransitionStartX);
-    m_subTileY = static_cast<uint8_t>(m_subTileTransitionStartY);
+    // Shift the old visual position to new tile coordinates.
+    // This places the start at the same screen position as before,
+    // eliminating any visual jump at the moment of tile crossing.
+    m_subTileTransitionStartX = curVisualX - dx * 255.0f;
+    m_subTileTransitionStartY = curVisualY - dy * 255.0f;
 
-    m_subTileTransitionDuration = getStepDuration(false, dir);
+    // Set base position to center (transition target).
+    m_subTileX = 128;
+    m_subTileY = 128;
+
+    // Full step duration for full-tile traversal.
+    // The transition covers the entire visual distance from old position
+    // to the new tile center, matching the server's step timing.
+    // Use ignoreDiagonal=true so getStepDuration() looks up the current
+    // tile (getPosition()) rather than translatedToDirection(dir) which
+    // would be one tile beyond where the creature now stands.
+    m_subTileTransitionDuration = getStepDuration(true);
     m_subTileTransitionTimer.restart();
     m_subTileTransitioning = true;
 
@@ -941,14 +1009,23 @@ void Creature::onAppear()
         const auto dir = m_oldPosition.getDirectionFromPosition(m_position);
         setDirection(dir);
         m_lastStepDirection = dir;
+        // Protect direction from sub-tile delta inference during/after tile crossing
+        if (!isLocalPlayer()) {
+            m_hasServerTurn = true;
+            m_serverTurnTimer.restart();
+        }
         const int dx = m_position.x - m_oldPosition.x;
         const int dy = m_position.y - m_oldPosition.y;
         if (m_isPredicting) {
             // Preserve visual continuity: compute current unclamped predicted
             // position and shift by one tile to get the new base on the new tile.
+            // The float base is stored WITHOUT clamping so that late server
+            // confirmations (prediction overshot past 255) don't cause a snap-back.
             auto [predSubX, predSubY] = getPredictedSubTileF();
             predSubX -= dx * 255.0f;
             predSubY -= dy * 255.0f;
+            m_predictionBaseX = predSubX;
+            m_predictionBaseY = predSubY;
             m_subTileX = static_cast<uint8_t>(std::clamp(predSubX, 0.0f, 255.0f));
             m_subTileY = static_cast<uint8_t>(std::clamp(predSubY, 0.0f, 255.0f));
             m_predictionTimer.restart();
@@ -957,8 +1034,12 @@ void Creature::onAppear()
             m_predictionNextTileWalkable = checkNextTileWalkable(m_predictionDirection);
             m_predictionStepDuration = getStepDuration(false, m_predictionDirection);
         } else {
-            // Non-predicting creature (monster/NPC/other player): start sub-tile transition
-            // from edge to center for smooth visual movement
+            // Smooth full-tile transition: interpolate from the old visual
+            // position (shifted to new tile coordinates) to the new tile center.
+            // This handles both legacy tile-to-tile creatures (monsters using
+            // A* pathfinding, NPCs, idle wandering) and continuous-movement
+            // creatures. For the latter, the first server sub-tile update
+            // (arriving ~20ms later) cancels the transition and takes over.
             startSubTileTransition(dir);
         }
         if (isCameraFollowing()) {

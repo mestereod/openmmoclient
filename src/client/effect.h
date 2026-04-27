@@ -35,6 +35,8 @@ public:
     bool isEffect() const override { return true; }
     bool waitFor(const EffectPtr&);
 
+    void setSubTileOffset(uint8_t subX, uint8_t subY) { m_subTileX = subX; m_subTileY = subY; }
+
     EffectPtr asEffect() { return static_self_cast<Effect>(); }
 
 protected:
@@ -46,4 +48,7 @@ private:
 
     uint16_t m_duration{ 0 };
     uint16_t m_timeToStartDrawing{ 0 };
+
+    uint8_t m_subTileX{ 128 };
+    uint8_t m_subTileY{ 128 };
 };

@@ -381,6 +381,11 @@ local function unbindMovingKeys()
     gameWalk.unbindTurnKey('Ctrl+D')
     gameWalk.unbindTurnKey('Ctrl+S')
     gameWalk.unbindTurnKey('Ctrl+A')
+
+    -- Stop any ongoing movement immediately when chat is activated.
+    -- Without this, if a walk key is held when Enter is pressed,
+    -- the key-up handler gets unbound and walking never stops.
+    gameWalk.stopSmartWalk()
 end
 
 local function bindMovingKeys()
@@ -425,15 +430,16 @@ function switchChatOnCall()
         return
     end
 
-    if isChatEnabled() and consoleToggleChat.isChecked then
+    if not isChatEnabled() then
+        -- Chat is off → enable it
         toggleChat()
     else
+        -- Chat is on with empty text → disable it
         local message = consoleTextEdit:getText()
         if message == '' then
-            if not isChatEnabled() or modules.client_options.getOption('returnDisablesChat') then
-                toggleChat()
-            end
+            toggleChat()
         end
+        -- Non-empty text: sendCurrentMessage handles sending + disabling
     end
 end
 
@@ -524,18 +530,23 @@ function load()
     local settings = g_settings.getNode('game_console')
     if settings then
         messageHistory = settings.messageHistory or {}
-        consoleToggleChat.isChecked = settings.wasdMode or false
+        consoleToggleChat.isChecked = (settings.wasdMode == nil) and true or settings.wasdMode
         showHighlightedUnderline = settings.showHighlightedUnderline or false
-        if consoleToggleChat.isChecked then
-            consoleToggleChat:setText(tr('Chat Off'))
-        else
-            consoleToggleChat:setText(tr('Chat On'))
-        end
-        -- Only update chat mode if game is online to avoid binding issues during initialization
-        if g_game.isOnline() then
-            updateChatMode()
-        end
+    else
+        consoleToggleChat.isChecked = true
     end
+
+    if consoleToggleChat.isChecked then
+        consoleToggleChat:setText(tr('Chat Off'))
+    else
+        consoleToggleChat:setText(tr('Chat On'))
+    end
+
+    -- Only update chat mode if game is online to avoid binding issues during initialization
+    if g_game.isOnline() then
+        updateChatMode()
+    end
+
     loadCommunicationSettings()
 end
 
@@ -1432,6 +1443,9 @@ function sendCurrentMessage()
 
     -- send message
     sendMessage(message)
+
+    -- Deactivate chat after sending so WASD returns to movement
+    toggleChat()
 end
 
 function addFilter(filter)

@@ -263,6 +263,19 @@ void MapView::drawForeground(const Rect& rect)
             continue;
 
         Point p = transformPositionTo2D(pos) - m_posInfo.drawOffset;
+
+        if (const auto& tile = g_map.getTile(pos)) {
+            for (const auto& thing : tile->getThings()) {
+                if (thing->isCreature()) {
+                    const auto& creature = thing->static_self_cast<Creature>();
+                    if (creature->getName() == staticText->getName()) {
+                        p += creature->getSubTileOffset() * m_posInfo.scaleFactor;
+                        break;
+                    }
+                }
+            }
+        }
+
         p.x *= m_posInfo.horizontalStretchFactor;
         p.y *= m_posInfo.verticalStretchFactor;
         p += rect.topLeft();
@@ -277,6 +290,13 @@ void MapView::drawForeground(const Rect& rect)
             continue;
 
         auto p = transformPositionTo2D(pos) - m_posInfo.drawOffset;
+
+        if (const auto& tile = g_map.getTile(pos)) {
+            if (const auto& creature = tile->getTopCreature()) {
+                p += creature->getSubTileOffset() * m_posInfo.scaleFactor;
+            }
+        }
+
         p.x *= m_posInfo.horizontalStretchFactor;
         p.y *= m_posInfo.verticalStretchFactor;
         p += rect.topLeft();

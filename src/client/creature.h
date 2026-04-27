@@ -333,6 +333,7 @@ private:
     uint8_t m_subTileY{ 128 };
 
     Timer m_subTileMoveTimer;
+    Timer m_lastSubTileUpdateTimer;
     bool m_subTileMoving{ false };
 
     // Client-side movement prediction fields
@@ -340,6 +341,12 @@ private:
     bool m_isPredicting{ false };
     Timer m_predictionTimer;
     uint16_t m_predictionStepDuration{ 0 };
+
+    // Float prediction base: preserves unclamped sub-tile position across
+    // tile crossings so the visual offset doesn't snap back when the server
+    // confirms late and the prediction has overshot past 255.
+    float m_predictionBaseX{ 128.0f };
+    float m_predictionBaseY{ 128.0f };
 
     // Whether the next tile in the prediction direction is walkable (client-side collision)
     bool m_predictionNextTileWalkable{ true };
@@ -381,6 +388,11 @@ private:
     bool m_showShieldTexture{ true };
     bool m_typing{ false };
     bool m_isCovered{ false };
+
+    // Server turn packet priority: prevent late sub-tile corrections
+    // from overriding the authoritative direction set by turn packets
+    Timer m_serverTurnTimer;
+    bool m_hasServerTurn{ false };
 
     StaticTextPtr m_text;
 

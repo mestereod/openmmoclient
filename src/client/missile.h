@@ -32,6 +32,10 @@ public:
 
     void setId(uint32_t id) override;
     void setPath(const Position& fromPosition, const Position& toPosition);
+    void setSubTileOffsets(uint8_t fromSubX, uint8_t fromSubY, uint8_t toSubX, uint8_t toSubY) {
+        m_fromSubTileX = fromSubX; m_fromSubTileY = fromSubY;
+        m_toSubTileX = toSubX; m_toSubTileY = toSubY;
+    }
 
     bool isMissile() const override { return true; }
 
@@ -46,10 +50,16 @@ protected:
 private:
     Timer m_animationTimer;
     Point m_delta;
+    Point m_startOffset;
 
     float m_duration{ 0.f };
 
     Otc::Direction m_direction{ Otc::InvalidDirection };
 
     uint8_t m_distance{ 0 };
+
+    uint8_t m_fromSubTileX{ 128 };
+    uint8_t m_fromSubTileY{ 128 };
+    uint8_t m_toSubTileX{ 128 };
+    uint8_t m_toSubTileY{ 128 };
 };

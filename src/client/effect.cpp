@@ -96,7 +96,16 @@ void Effect::draw(const Point& dest, const bool drawThings, LightView* lightView
     if (drawThings && hasShader())
         g_drawPool.setShaderProgram(g_shaders.getShaderById(m_shaderId), true/*, shaderAction*/);
 
-    thingType->draw(dest, 0, xPattern, yPattern, 0, animationPhase, Color::white, drawThings, lightView);
+    // Apply sub-tile offset for precise positioning
+    Point adjustedDest = dest;
+    if (m_subTileX != 128 || m_subTileY != 128) {
+        const int spriteSize = g_gameConfig.getSpriteSize();
+        const int subOffX = static_cast<int>((m_subTileX / 255.0f - 0.5f) * spriteSize);
+        const int subOffY = static_cast<int>((m_subTileY / 255.0f - 0.5f) * spriteSize);
+        adjustedDest += Point(subOffX, subOffY) * g_drawPool.getScaleFactor();
+    }
+
+    thingType->draw(adjustedDest, 0, xPattern, yPattern, 0, animationPhase, Color::white, drawThings, lightView);
 }
 
 void Effect::onAppear()

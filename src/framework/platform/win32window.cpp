@@ -620,6 +620,10 @@ LRESULT WIN32Window::windowProc(const HWND hWnd, const uint32_t uMsg, const WPAR
     switch (uMsg) {
         case WM_SETCURSOR:
         {
+            // Let Windows handle cursor for non-client areas (borders, title bar)
+            // so resize cursors are shown when hovering over window edges
+            if (LOWORD(lParam) != HTCLIENT)
+                return DefWindowProc(hWnd, uMsg, wParam, lParam);
             if (m_cursor)
                 SetCursor(m_cursor);
             else

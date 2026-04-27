@@ -33,7 +33,7 @@ local turnKeys = {
 WalkController = Controller:new()
 
 --- Stops the smart walking process.
-local function stopSmartWalk()
+function stopSmartWalk()
     smartWalkDirs = {}
     smartWalkDir = nil
     -- Send stop to server so continuous movement stops
@@ -133,6 +133,13 @@ end
 
 --- Changes the current walking direction.
 local function changeWalkDir(dir, pop)
+    -- Prevent movement while chat text input is active
+    if modules.game_console and modules.game_console.isChatEnabled() then
+        if not pop then return end
+        stopSmartWalk()
+        return
+    end
+
     -- Remove all occurrences of the specified direction
     while table.removevalue(smartWalkDirs, dir) do end
 
@@ -169,6 +176,9 @@ end
 
 --- Handles turning the player.
 local function turn(dir, repeated)
+    -- Prevent turning while chat text input is active
+    if modules.game_console and modules.game_console.isChatEnabled() then return end
+
     local player = g_game.getLocalPlayer()
     if player:isWalking() and player:getDirection() == dir then
         return
